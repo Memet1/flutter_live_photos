@@ -467,7 +467,15 @@ class LivePhoto {
             let videoReaderOutput = AVAssetReaderTrackOutput(track: videoTrack, outputSettings: videoReaderSettings)
             videoReader?.add(videoReaderOutput)
             // Create Video Writer Input
-            let videoWriterInput = AVAssetWriterInput(mediaType: .video, outputSettings: [AVVideoCodecKey : AVVideoCodecH264, AVVideoWidthKey : videoTrack.naturalSize.width, AVVideoHeightKey : videoTrack.naturalSize.height])
+            let videoWriterInput = AVAssetWriterInput(mediaType: .video, outputSettings: [
+                AVVideoCodecKey: AVVideoCodecType.hevc,
+                AVVideoWidthKey: videoTrack.naturalSize.width,
+                AVVideoHeightKey: videoTrack.naturalSize.height,
+                AVVideoCompressionPropertiesKey: [
+                    AVVideoAverageBitRateKey: videoTrack.estimatedDataRate,
+                    AVVideoProfileLevelKey: kVTProfileLevel_HEVC_Main_AutoLevel
+                ]
+            ])
             videoWriterInput.transform = videoTrack.preferredTransform
             videoWriterInput.expectsMediaDataInRealTime = true
             assetWriter?.add(videoWriterInput)
@@ -490,14 +498,17 @@ class LivePhoto {
             // Create necessary identifier metadata and still image time metadata
             let assetIdentifierMetadata = metadataForAssetID(assetIdentifier)
             let stillImageTimeMetadataAdapter = createMetadataAdaptorForStillImageTime()
+            let livePhotoAutoMetadataAdapter = createMetadataAdaptorForLivePhotoAuto()
             assetWriter?.metadata = [assetIdentifierMetadata]
             assetWriter?.add(stillImageTimeMetadataAdapter.assetWriterInput)
+            assetWriter?.add(livePhotoAutoMetadataAdapter.assetWriterInput)
             // Start the Asset Writer
             assetWriter?.startWriting()
             assetWriter?.startSession(atSourceTime: CMTime.zero)
             // Add still image metadata
             let _stillImagePercent: Float = 0.5
             stillImageTimeMetadataAdapter.append(AVTimedMetadataGroup(items: [metadataItemForStillImageTime()],timeRange: videoAsset.makeStillImageTimeRange(percent: _stillImagePercent, inFrameCount: frameCount)))
+            livePhotoAutoMetadataAdapter.append(AVTimedMetadataGroup(items: [metadataItemForLivePhotoAuto()], timeRange: videoAsset.makeStillImageTimeRange(percent: _stillImagePercent, inFrameCount: frameCount)))
             // For end of writing / progress
             var writingVideoFinished = false
             var writingAudioFinished = false
@@ -594,7 +605,36 @@ class LivePhoto {
         item.dataType = "com.apple.metadata.datatype.int8"
         return item
     }
-    
+
+    private func createMetadataAdaptorForLivePhotoAuto() -> AVAssetWriterInputMetadataAdaptor {
+        let keyLivePhotoAuto = "com.apple.quicktime.live-photo.auto"
+        let keySpace = "mdta"
+        let spec: NSDictionary = [
+            kCMMetadataFormatDescriptionMetadataSpecificationKey_Identifier as NSString:
+                "\(keySpace)/\(keyLivePhotoAuto)",
+            kCMMetadataFormatDescriptionMetadataSpecificationKey_DataType as NSString:
+                "com.apple.metadata.datatype.int8"
+        ]
+        var desc: CMFormatDescription? = nil
+        CMMetadataFormatDescriptionCreateWithMetadataSpecifications(
+            allocator: kCFAllocatorDefault,
+            metadataType: kCMMetadataFormatType_Boxed,
+            metadataSpecifications: [spec] as CFArray,
+            formatDescriptionOut: &desc
+        )
+        let input = AVAssetWriterInput(mediaType: .metadata, outputSettings: nil, sourceFormatHint: desc)
+        return AVAssetWriterInputMetadataAdaptor(assetWriterInput: input)
+    }
+
+    private func metadataItemForLivePhotoAuto() -> AVMetadataItem {
+        let item = AVMutableMetadataItem()
+        item.key = "com.apple.quicktime.live-photo.auto" as (NSCopying & NSObjectProtocol)?
+        item.keySpace = AVMetadataKeySpace(rawValue: "mdta")
+        item.value = 1 as (NSCopying & NSObjectProtocol)?
+        item.dataType = "com.apple.metadata.datatype.int8"
+        return item
+    }
+
 }
 
 fileprivate extension AVAsset {
