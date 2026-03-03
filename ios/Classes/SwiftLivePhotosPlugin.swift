@@ -21,8 +21,8 @@ public class SwiftLivePhotosPlugin: NSObject, FlutterPlugin {
                 result(false)
                 return
             }
-            let livePhotoClient = LivePhotoClient(callback: {() in
-                result(true)
+            let livePhotoClient = LivePhotoClient(callback: {(success) in
+                result(success)
             })
             livePhotoClient.runLivePhotoConvertionFromVideoURL(rawURL: videoURL)
             
@@ -32,12 +32,12 @@ public class SwiftLivePhotosPlugin: NSObject, FlutterPlugin {
                 result(false)
                 return
             }
-            // Отримуємо параметри часу для обрізки
             let startTime = args["startTime"] as? Double ?? 0.0
             let duration = args["duration"] as? Double ?? 0.0
             
-            let livePhotoClient = LivePhotoClient(callback: {() in
-                result(true)
+            // ТЕПЕР ПОВЕРТАЄМО РЕАЛЬНИЙ СТАТУС (true або false)
+            let livePhotoClient = LivePhotoClient(callback: {(success) in
+                result(success)
             })
             livePhotoClient.runLivePhotoConvertionFromLocalPath(rawURL: localPath, startTime: startTime, duration: duration)
             
@@ -56,18 +56,17 @@ public class SwiftLivePhotosPlugin: NSObject, FlutterPlugin {
 }
 
 class LivePhotoClient {
-    // LivePhoto変換の登場人物
     let SRC_KEY = "mp4"
     let STILL_KEY = "png"
     let MOV_KEY = "mov"
     
-    let completedCallback: (() -> Void)
+    // Змінено callback, щоб він приймав Bool
+    let completedCallback: ((Bool) -> Void)
     
-    init(callback: @escaping () -> Void) {
+    init(callback: @escaping (Bool) -> Void) {
         completedCallback = callback
     }
     
-    // LivePhoto変換エントリポイント
     public func runLivePhotoConvertionFromVideoURL(rawURL: String) {
         if let videoURL = URL(string: rawURL) {
             let photos = PHPhotoLibrary.authorizationStatus()
@@ -82,7 +81,7 @@ class LivePhotoClient {
                         }
                     } else {
                         print("CameraRoll permission denied")
-                        self.completedCallback()
+                        self.completedCallback(false)
                     }
                 })
             } else {
@@ -96,7 +95,6 @@ class LivePhotoClient {
         }
     }
 
-    // LivePhoto変換エントリポイント (Тепер підтримує обрізку!)
     public func runLivePhotoConvertionFromLocalPath(rawURL: String, startTime: Double = 0.0, duration: Double = 0.0) {
         if let localPath = URL(string: rawURL) {
             let photos = PHPhotoLibrary.authorizationStatus()
@@ -112,7 +110,7 @@ class LivePhotoClient {
                         self.convertMp4ToMov(mp4Path: localPath, startTime: startTime, duration: duration)
                     } else {
                         print("CameraRoll permission denied")
-                        self.completedCallback()
+                        self.completedCallback(false)
                     }
                 })
             } else {
@@ -121,7 +119,6 @@ class LivePhotoClient {
         }
     }
 
-    // MP4をMovに変換する (Нативна обрізка без втрати якості)
     private func convertMp4ToMov(mp4Path: URL, startTime: Double = 0.0, duration: Double = 0.0) {
         let avAsset = AVURLAsset(url: mp4Path)
         let preset = AVAssetExportPresetPassthrough
@@ -132,14 +129,12 @@ class LivePhotoClient {
             AVAssetExportSession.determineCompatibility(ofExportPreset: preset, with: avAsset, outputFileType: outFileType, completionHandler: { (isCompatible) in
                 if !isCompatible {
                     print("Export session not compatible")
-                    return
             }})
             
             exportSession.outputFileType = outFileType
             exportSession.outputURL = outputURL
             self.deleteFile(url: outputURL)
             
-            // Встановлюємо межі обрізки, якщо вони передані
             if startTime > 0 || duration > 0 {
                 let start = CMTime(seconds: startTime, preferredTimescale: 600)
                 let dur = duration > 0 ? CMTime(seconds: duration, preferredTimescale: 600) : avAsset.duration
@@ -156,20 +151,21 @@ class LivePhotoClient {
                     break
                 case AVAssetExportSession.Status.failed:
                     print("AVAssetExportSessionStatus failed. \(String(describing: exportSession.error))")
-                    self.completedCallback()
+                    self.completedCallback(false)
                     break
                 case AVAssetExportSession.Status.cancelled:
                     print("AVAssetExportSessionStatus cancelled")
-                    self.completedCallback()
+                    self.completedCallback(false)
                     break
                 default:
                     break
                 }
             }
+        } else {
+            self.completedCallback(false)
         }
     }
     
-    // LivePhotoの生成
     private func generateLivePhoto() {
         let pngPath = self.filePath(forKey: STILL_KEY)!
         let movPath = self.filePath(forKey: MOV_KEY)!
@@ -182,45 +178,58 @@ class LivePhotoClient {
                     LivePhoto.saveToLibrary(resources, completion: {(success) in
                         if success {
                             print("Successed to save Photos")
-                            self.completedCallback()
+                            self.completedCallback(true)
                         } else {
                             print("Failed to save Photos")
-                            self.completedCallback()
+                            self.completedCallback(false)
                         }
                     })
                 } else {
-                    self.completedCallback()
+                    print("Failed to generate resources")
+                    self.completedCallback(false)
                 }
             })
         }
     }
     
-    // ビデオからサムネイルpngを生成する
+    // ВАЖЛИВО: Тепер картинка масштабується ідеально під розмір 1080x1920!
     private func generateThumbnail(movURL: URL?) {
         guard let movURL = movURL else { return }
         let asset = AVURLAsset(url: movURL, options: nil)
         let imgGenerator = AVAssetImageGenerator(asset: asset)
+        imgGenerator.appliesPreferredTrackTransform = true
         let filePath = self.filePath(forKey: STILL_KEY)
+        
         if let cgImage = try? imgGenerator.copyCGImage(at: CMTimeMake(value: 0, timescale: 1), actualTime: nil) {
-            let pngImage = UIImage(cgImage: cgImage)
-            if let pngRep = pngImage.pngData() {
+            let originalImage = UIImage(cgImage: cgImage)
+            
+            // Формат 9:16 як у відео
+            let targetSize = CGSize(width: 1080, height: 1920)
+            let widthRatio = targetSize.width / originalImage.size.width
+            let heightRatio = targetSize.height / originalImage.size.height
+            let scaleFactor = max(widthRatio, heightRatio)
+            
+            let scaledSize = CGSize(width: originalImage.size.width * scaleFactor, height: originalImage.size.height * scaleFactor)
+            let origin = CGPoint(x: (targetSize.width - scaledSize.width) / 2.0, y: (targetSize.height - scaledSize.height) / 2.0)
+            
+            UIGraphicsBeginImageContextWithOptions(targetSize, false, 1.0)
+            originalImage.draw(in: CGRect(origin: origin, size: scaledSize))
+            let scaledImage = UIGraphicsGetImageFromCurrentImageContext()
+            UIGraphicsEndImageContext()
+            
+            if let finalImage = scaledImage, let data = finalImage.pngData() {
                 if let filePath = filePath {
                     do {
                         self.deleteFile(url: filePath)
-                        try pngRep.write(to: filePath, options: .atomic)
+                        try data.write(to: filePath, options: .atomic)
                     } catch let err {
                         print("Failed to generate png: \(err)")
                     }
-                } else {
-                    print("filePath nil")
                 }
-            } else {
-                print("pngRep nil")
             }
         }
     }
     
-    // 非同期ダウンロード
     private func downloadAsync(url: URL, to localUrl: URL?, completion: @escaping (_: URL) -> ()) {
         let sessionConfig = URLSessionConfiguration.default
         let session = URLSession(configuration: sessionConfig)
@@ -259,7 +268,6 @@ class LivePhotoClient {
     
     private func deleteFile(url: URL) {
         if FileManager.default.fileExists(atPath: url.path) {
-            print("Delete existing file")
             do {
                 try FileManager.default.removeItem(atPath: url.path)
             } catch {
@@ -269,13 +277,7 @@ class LivePhotoClient {
     }
 }
 
-//
-//  LivePhoto.swift
-//  Live Photos
-//
-
 class LivePhoto {
-    // MARK: PUBLIC
     typealias LivePhotoResources = (pairedImage: URL, pairedVideo: URL)
     
     @available(iOS 9.1, *)
@@ -302,13 +304,12 @@ class LivePhoto {
             }
         }, completionHandler: { (success, error) in
             if error != nil {
-                print(error as Any)
+                print("Save error: \(String(describing: error))")
             }
             completion(success)
         })
     }
     
-    // MARK: PRIVATE
     private static let shared = LivePhoto()
     private static let queue = DispatchQueue(label: "com.limit-point.LivePhotoQueue", attributes: .concurrent)
     lazy private var cacheDirectory: URL? = {
@@ -441,7 +442,6 @@ class LivePhoto {
     var videoReader: AVAssetReader?
     var assetWriter: AVAssetWriter?
     
-    // ВАЖЛИВО: Транскодування у 9:16 + HEVC + Видалення Аудіо
     func addAssetID(_ assetIdentifier: String, toVideo videoURL: URL, saveTo destinationURL: URL, progress: @escaping (CGFloat) -> Void, completion: @escaping (URL?) -> Void) {
         
         let videoAsset = AVURLAsset(url: videoURL)
@@ -458,7 +458,6 @@ class LivePhoto {
             let videoReaderOutput = AVAssetReaderTrackOutput(track: videoTrack, outputSettings: videoReaderSettings)
             videoReader?.add(videoReaderOutput)
             
-            // ВАЖЛИВО: Встановлюємо 1080x1920 і масштабування AspectFill для сумісності зі шпалерами
             let videoWriterInput = AVAssetWriterInput(mediaType: .video, outputSettings: [
                 AVVideoCodecKey: AVVideoCodecType.hevc,
                 AVVideoWidthKey: 1080,
@@ -472,8 +471,6 @@ class LivePhoto {
             videoWriterInput.transform = videoTrack.preferredTransform
             videoWriterInput.expectsMediaDataInRealTime = true
             assetWriter?.add(videoWriterInput)
-            
-            // АУДІО ПОВНІСТЮ ВИДАЛЕНО!
             
             let assetIdentifierMetadata = metadataForAssetID(assetIdentifier)
             let stillImageTimeMetadataAdapter = createMetadataAdaptorForStillImageTime()
@@ -573,110 +570,3 @@ class LivePhoto {
         let spec: NSDictionary = [
             kCMMetadataFormatDescriptionMetadataSpecificationKey_Identifier as NSString:
                 "\(keySpace)/\(keyLivePhotoAuto)",
-            kCMMetadataFormatDescriptionMetadataSpecificationKey_DataType as NSString:
-                "com.apple.metadata.datatype.int8"
-        ]
-        var desc: CMFormatDescription? = nil
-        CMMetadataFormatDescriptionCreateWithMetadataSpecifications(
-            allocator: kCFAllocatorDefault,
-            metadataType: kCMMetadataFormatType_Boxed,
-            metadataSpecifications: [spec] as CFArray,
-            formatDescriptionOut: &desc
-        )
-        let input = AVAssetWriterInput(mediaType: .metadata, outputSettings: nil, sourceFormatHint: desc)
-        return AVAssetWriterInputMetadataAdaptor(assetWriterInput: input)
-    }
-
-    private func metadataItemForLivePhotoAuto() -> AVMetadataItem {
-        let item = AVMutableMetadataItem()
-        item.key = "com.apple.quicktime.live-photo.auto" as (NSCopying & NSObjectProtocol)?
-        item.keySpace = AVMetadataKeySpace(rawValue: "mdta")
-        item.value = 1 as (NSCopying & NSObjectProtocol)?
-        item.dataType = "com.apple.metadata.datatype.int8"
-        return item
-    }
-}
-
-fileprivate extension AVAsset {
-    func countFrames(exact:Bool) -> Int {
-        var frameCount = 0
-        if let videoReader = try? AVAssetReader(asset: self)  {
-            if let videoTrack = self.tracks(withMediaType: .video).first {
-                frameCount = Int(CMTimeGetSeconds(self.duration) * Float64(videoTrack.nominalFrameRate))
-                if exact {
-                    frameCount = 0
-                    let videoReaderOutput = AVAssetReaderTrackOutput(track: videoTrack, outputSettings: nil)
-                    videoReader.add(videoReaderOutput)
-                    videoReader.startReading()
-                    while true {
-                        let sampleBuffer = videoReaderOutput.copyNextSampleBuffer()
-                        if sampleBuffer == nil { break }
-                        frameCount += 1
-                    }
-                    videoReader.cancelReading()
-                }
-            }
-        }
-        return frameCount
-    }
-    
-    func stillImageTime() -> CMTime?  {
-        var stillTime:CMTime? = nil
-        if let videoReader = try? AVAssetReader(asset: self)  {
-            if let metadataTrack = self.tracks(withMediaType: .metadata).first {
-                let videoReaderOutput = AVAssetReaderTrackOutput(track: metadataTrack, outputSettings: nil)
-                videoReader.add(videoReaderOutput)
-                videoReader.startReading()
-                let keyStillImageTime = "com.apple.quicktime.still-image-time"
-                let keySpaceQuickTimeMetadata = "mdta"
-                var found = false
-                while found == false {
-                    if let sampleBuffer = videoReaderOutput.copyNextSampleBuffer() {
-                        if CMSampleBufferGetNumSamples(sampleBuffer) != 0 {
-                            let group = AVTimedMetadataGroup(sampleBuffer: sampleBuffer)
-                            for item in group?.items ?? [] {
-                                if item.key as? String == keyStillImageTime && item.keySpace!.rawValue == keySpaceQuickTimeMetadata {
-                                    stillTime = group?.timeRange.start
-                                    found = true
-                                    break
-                                }
-                            }
-                        }
-                    }
-                    else { break }
-                }
-                videoReader.cancelReading()
-            }
-        }
-        return stillTime
-    }
-    
-    func makeStillImageTimeRange(percent:Float, inFrameCount:Int = 0) -> CMTimeRange {
-        var time = self.duration
-        var frameCount = inFrameCount
-        if frameCount == 0 {
-            frameCount = self.countFrames(exact: true)
-        }
-        let frameDuration = Int64(Float(time.value) / Float(frameCount))
-        time.value = Int64(Float(time.value) * percent)
-        return CMTimeRangeMake(start: time, duration: CMTimeMake(value: frameDuration, timescale: time.timescale))
-    }
-    
-    func getAssetFrame(percent:Float) -> UIImage? {
-        let imageGenerator = AVAssetImageGenerator(asset: self)
-        imageGenerator.appliesPreferredTrackTransform = true
-        imageGenerator.requestedTimeToleranceAfter = CMTimeMake(value: 1,timescale: 100)
-        imageGenerator.requestedTimeToleranceBefore = CMTimeMake(value: 1,timescale: 100)
-        var time = self.duration
-        time.value = Int64(Float(time.value) * percent)
-        do {
-            var actualTime = CMTime.zero
-            let imageRef = try imageGenerator.copyCGImage(at: time, actualTime:&actualTime)
-            let img = UIImage(cgImage: imageRef)
-            return img
-        }
-        catch {
-            return nil
-        }
-    }
-}
