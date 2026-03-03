@@ -29,17 +29,17 @@ public class SwiftLivePhotosPlugin: NSObject, FlutterPlugin {
         case "generateFromLocalPath":
             let args = call.arguments as! [String: Any]
             guard let localPath = args["localPath"] as? String else {
-                print("🍎 [LivePhoto] ПОМИЛКА: Не передано localPath!")
+                NSLog("🍎 [LivePhoto] ПОМИЛКА: Не передано localPath!")
                 result(false)
                 return
             }
             let startTime = args["startTime"] as? Double ?? 0.0
             let duration = args["duration"] as? Double ?? 0.0
             
-            print("🍎 [LivePhoto] СТАРТ: Запит generateFromLocalPath. Start: \(startTime), Duration: \(duration)")
+            NSLog("🍎 [LivePhoto] СТАРТ: Запит generateFromLocalPath. Start: %f, Duration: %f", startTime, duration)
             
             let livePhotoClient = LivePhotoClient(callback: {(success) in
-                print("🍎 [LivePhoto] ФІНАЛЬНИЙ СТАТУС У FLUTTER: \(success)")
+                NSLog("🍎 [LivePhoto] ФІНАЛЬНИЙ СТАТУС У FLUTTER: %@", success ? "TRUE" : "FALSE")
                 result(success)
             })
             livePhotoClient.runLivePhotoConvertionFromLocalPath(rawURL: localPath, startTime: startTime, duration: duration)
@@ -97,21 +97,21 @@ class LivePhotoClient {
             self.deleteFile(url: outputPath)
             
             if photos == .notDetermined {
-                print("🍎 [LivePhoto] Запит дозволу на фото...")
+                NSLog("🍎 [LivePhoto] Запит дозволу на фото...")
                 PHPhotoLibrary.requestAuthorization({status in
                     if status == .authorized{
-                        print("🍎 [LivePhoto] Дозвіл отримано!")
+                        NSLog("🍎 [LivePhoto] Дозвіл отримано!")
                         self.convertMp4ToMov(mp4Path: localPath, startTime: startTime, duration: duration)
                     } else {
-                        print("🍎 [LivePhoto] ПОМИЛКА: Відмовлено в доступі до галереї!")
+                        NSLog("🍎 [LivePhoto] ПОМИЛКА: Відмовлено в доступі до галереї!")
                         self.completedCallback(false)
                     }
                 })
             } else if photos == .authorized || photos == .limited {
-                print("🍎 [LivePhoto] Дозвіл є. Переходимо до обрізки...")
+                NSLog("🍎 [LivePhoto] Дозвіл є. Переходимо до обрізки...")
                 self.convertMp4ToMov(mp4Path: localPath, startTime: startTime, duration: duration)
             } else {
-                print("🍎 [LivePhoto] ПОМИЛКА: Немає прав на галерею")
+                NSLog("🍎 [LivePhoto] ПОМИЛКА: Немає прав на галерею")
                 self.completedCallback(false)
             }
         } else {
@@ -120,7 +120,7 @@ class LivePhotoClient {
     }
 
     private func convertMp4ToMov(mp4Path: URL, startTime: Double = 0.0, duration: Double = 0.0) {
-        print("🍎 [LivePhoto] КРОК 1: Базова обрізка по часу...")
+        NSLog("🍎 [LivePhoto] КРОК 1: Базова обрізка по часу...")
         let avAsset = AVURLAsset(url: mp4Path)
         let preset = AVAssetExportPresetPassthrough
         let outFileType = AVFileType.mov
@@ -139,11 +139,11 @@ class LivePhotoClient {
             exportSession.exportAsynchronously { () -> Void in
                 switch exportSession.status {
                 case .completed:
-                    print("🍎 [LivePhoto] УСПІХ КРОК 1: Відео обрізано.")
+                    NSLog("🍎 [LivePhoto] УСПІХ КРОК 1: Відео обрізано.")
                     self.generateThumbnail(movURL: outputURL)
                     self.generateLivePhoto()
                 case .failed:
-                    print("🍎 [LivePhoto] ПОМИЛКА КРОК 1: Експорт провалився.")
+                    NSLog("🍎 [LivePhoto] ПОМИЛКА КРОК 1: Експорт провалився.")
                     self.completedCallback(false)
                 case .cancelled:
                     self.completedCallback(false)
@@ -160,16 +160,16 @@ class LivePhotoClient {
         let pngPath = self.filePath(forKey: STILL_KEY)!
         let movPath = self.filePath(forKey: MOV_KEY)!
         if #available(iOS 9.1, *) {
-            print("🍎 [LivePhoto] КРОК 3: Об'єднання в LivePhoto...")
+            NSLog("🍎 [LivePhoto] КРОК 3: Об'єднання в LivePhoto...")
             LivePhoto.generate(from: pngPath, videoURL: movPath, progress: { percent in }, completion: { livePhoto, resources in
                 if let resources = resources {
-                    print("🍎 [LivePhoto] Збереження в галерею...")
+                    NSLog("🍎 [LivePhoto] Збереження в галерею...")
                     LivePhoto.saveToLibrary(resources, completion: {(success) in
                         if success {
-                            print("🍎 [LivePhoto] ФІНІШ: УСПІШНО ЗБЕРЕЖЕНО!")
+                            NSLog("🍎 [LivePhoto] ФІНІШ: УСПІШНО ЗБЕРЕЖЕНО!")
                             self.completedCallback(true)
                         } else {
-                            print("🍎 [LivePhoto] ПОМИЛКА ФІНІШ.")
+                            NSLog("🍎 [LivePhoto] ПОМИЛКА ФІНІШ.")
                             self.completedCallback(false)
                         }
                     })
@@ -181,7 +181,7 @@ class LivePhotoClient {
     }
     
     private func generateThumbnail(movURL: URL?) {
-        print("🍎 [LivePhoto] КРОК 2: Генерація та масштабування обкладинки...")
+        NSLog("🍎 [LivePhoto] КРОК 2: Генерація та масштабування обкладинки...")
         guard let movURL = movURL else { return }
         let asset = AVURLAsset(url: movURL, options: nil)
         let imgGenerator = AVAssetImageGenerator(asset: asset)
@@ -190,7 +190,7 @@ class LivePhotoClient {
         
         if let cgImage = try? imgGenerator.copyCGImage(at: CMTimeMake(value: 0, timescale: 1), actualTime: nil) {
             let originalImage = UIImage(cgImage: cgImage)
-            print("🍎 [LivePhoto] Оригінальний розмір: \(originalImage.size)")
+            NSLog("🍎 [LivePhoto] Оригінальний розмір: %@", NSCoder.string(for: originalImage.size))
             
             let targetSize = CGSize(width: 1080, height: 1920)
             let widthRatio = targetSize.width / originalImage.size.width
@@ -206,13 +206,13 @@ class LivePhotoClient {
             UIGraphicsEndImageContext()
             
             if let finalImage = scaledImage, let data = finalImage.pngData() {
-                print("🍎 [LivePhoto] Відмасштабовано до: \(finalImage.size)")
+                NSLog("🍎 [LivePhoto] Відмасштабовано до: %@", NSCoder.string(for: finalImage.size))
                 if let filePath = filePath {
                     do {
                         self.deleteFile(url: filePath)
                         try data.write(to: filePath, options: .atomic)
                     } catch {
-                        print("🍎 [LivePhoto] ПОМИЛКА збереження png")
+                        NSLog("🍎 [LivePhoto] ПОМИЛКА збереження png")
                     }
                 }
             }
@@ -301,7 +301,7 @@ class LivePhoto {
             return
         }
         
-        print("🍎 [LivePhoto] Транскодування відео (1080x1920 + HEVC)...")
+        NSLog("🍎 [LivePhoto] Транскодування відео (1080x1920 + HEVC)...")
         addAssetID(assetIdentifier, toVideo: videoURL, saveTo: cacheDirectory.appendingPathComponent(assetIdentifier).appendingPathExtension("mov"), progress: progress) { (_videoURL) in
             if let pairedVideoURL = _videoURL {
                 _ = PHLivePhoto.request(withResourceFileURLs: [pairedVideoURL, pairedImageURL], placeholderImage: nil, targetSize: CGSize.zero, contentMode: .aspectFit, resultHandler: { (livePhoto: PHLivePhoto?, info: [AnyHashable : Any]) -> Void in
