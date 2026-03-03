@@ -474,7 +474,7 @@ class LivePhoto {
                 AVVideoHeightKey: videoTrack.naturalSize.height,
                 AVVideoCompressionPropertiesKey: [
                     AVVideoAverageBitRateKey: videoTrack.estimatedDataRate,
-                    AVVideoProfileLevelKey: kVTProfileLevel_HEVC_Main_AutoLevel
+                    AVVideoProfileLevelKey: "HEVC_Main_AutoLevel" as CFString
                 ]
             ])
             videoWriterInput.transform = videoTrack.preferredTransform
