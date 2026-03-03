@@ -4,6 +4,7 @@ import Foundation
 import AVFoundation
 import Photos
 import MobileCoreServices
+import VideoToolbox
 
 public class SwiftLivePhotosPlugin: NSObject, FlutterPlugin {
   public static func register(with registrar: FlutterPluginRegistrar) {
