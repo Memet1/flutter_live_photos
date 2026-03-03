@@ -18,15 +18,17 @@ public class SwiftLivePhotosPlugin: NSObject, FlutterPlugin {
         case "generateFromLocalPath":
             let args = call.arguments as! [String: Any]
             guard let localPath = args["localPath"] as? String else {
+                NSLog("🍎 [LivePhoto] Error: localPath is missing")
                 result(false)
                 return
             }
             let startTime = args["startTime"] as? Double ?? 0.0
             let duration = args["duration"] as? Double ?? 0.0
             
-            NSLog("🍎 [LivePhoto] Запит: Start: %f, Duration: %f", startTime, duration)
+            NSLog("🍎 [LivePhoto] Start Request: Start Time %f, Duration %f", startTime, duration)
             
             let livePhotoClient = LivePhotoClient(callback: {(success) in
+                NSLog("🍎 [LivePhoto] Final Status to Flutter: %@", success ? "TRUE" : "FALSE")
                 result(success)
             })
             livePhotoClient.runLivePhotoConvertionFromLocalPath(rawURL: localPath, startTime: startTime, duration: duration)
@@ -42,8 +44,7 @@ public class SwiftLivePhotosPlugin: NSObject, FlutterPlugin {
 }
 
 class LivePhotoClient {
-    let SRC_KEY = "mp4"
-    let STILL_KEY = "png"
+    let STILL_KEY = "jpg"
     let MOV_KEY = "mov"
     let completedCallback: ((Bool) -> Void)
     
@@ -52,35 +53,30 @@ class LivePhotoClient {
     }
 
     public func runLivePhotoConvertionFromLocalPath(rawURL: String, startTime: Double = 0.0, duration: Double = 0.0) {
-        guard let localURL = URL(string: rawURL) else {
+        guard let localURL = URL(string: "file://" + rawURL) else {
             completedCallback(false)
             return
         }
-        
-        let pngPath = self.filePath(forKey: STILL_KEY)!
-        let outputPath = self.filePath(forKey: MOV_KEY)!
-        self.deleteFile(url: pngPath)
-        self.deleteFile(url: outputPath)
         
         PHPhotoLibrary.requestAuthorization { status in
             if status == .authorized || status == .limited {
                 self.processVideo(at: localURL, startTime: startTime, duration: duration)
             } else {
-                NSLog("🍎 [LivePhoto] Немає прав доступу")
+                NSLog("🍎 [LivePhoto] Error: Photo Library access denied")
                 self.completedCallback(false)
             }
         }
     }
 
     private func processVideo(at url: URL, startTime: Double, duration: Double) {
-        NSLog("🍎 [LivePhoto] Крок 1: Обробка відео...")
+        NSLog("🍎 [LivePhoto] Step 1: Processing Video & Thumbnail...")
         let asset = AVURLAsset(url: url)
         
-        // Генеруємо превью ТУТ, до будь-яких маніпуляцій з MOV
+        // Генерація обкладинки під 9:16
         self.generateThumbnail(from: asset, at: startTime)
         
-        // Тепер створюємо MOV
-        self.generateLivePhoto()
+        // Створення Live Photo (склейка)
+        self.generateLivePhoto(originalVideoURL: url)
     }
 
     private func generateThumbnail(from asset: AVAsset, at time: Double) {
@@ -101,61 +97,53 @@ class LivePhotoClient {
             let finalImage = UIGraphicsGetImageFromCurrentImageContext()
             UIGraphicsEndImageContext()
             
-            if let data = finalImage?.jpegData(compressionQuality: 0.9), let path = self.filePath(forKey: STILL_KEY) {
+            if let data = finalImage?.jpegData(compressionQuality: 0.9), let path = self.fileURL(forKey: "input", ext: "jpg") {
                 try? data.write(to: path)
-                NSLog("🍎 [LivePhoto] Обкладинка готова")
+                NSLog("🍎 [LivePhoto] Thumbnail generated at 1080x1920")
             }
         }
     }
 
-    private func generateLivePhoto() {
-        let pngPath = self.filePath(forKey: STILL_KEY)!
-        let movPath = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("input.mp4") // Тимчасовий вхід
+    private func generateLivePhoto(originalVideoURL: URL) {
+        guard let pngPath = self.fileURL(forKey: "input", ext: "jpg") else {
+            completedCallback(false)
+            return
+        }
         
-        // Важливо: ми використовуємо оригінальний шлях з Flutter для генерації
-        // Але оскільки нам треба передати MOV_KEY шлях у плагін, ми зробимо це через метод generate
-        
-        // Виклик нативної бібліотеки
-        LivePhoto.generate(from: pngPath, videoURL: movPath, progress: { _ in }, completion: { livePhoto, resources in
+        NSLog("🍎 [LivePhoto] Step 2: Generating Resources...")
+        LivePhoto.generate(from: pngPath, videoURL: originalVideoURL) { lp, resources in
             if let res = resources {
+                NSLog("🍎 [LivePhoto] Step 3: Saving to Library...")
                 LivePhoto.saveToLibrary(res) { success in
-                    NSLog("🍎 [LivePhoto] Результат збереження: \(success)")
                     self.completedCallback(success)
                 }
             } else {
-                NSLog("🍎 [LivePhoto] Не вдалося створити ресурси")
+                NSLog("🍎 [LivePhoto] Error: Failed to create LivePhoto resources")
                 self.completedCallback(false)
             }
-        })
+        }
     }
 
-    private func filePath(forKey key: String) -> URL? {
-        return FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?.appendingPathComponent("\(key).\(key == STILL_KEY ? "jpg" : "mov")")
-    }
-
-    private func deleteFile(url: URL) {
-        try? FileManager.default.removeItem(at: url)
+    private func fileURL(forKey key: String, ext: String) -> URL? {
+        return FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?.appendingPathComponent("\(key).\(ext)")
     }
 }
 
-// Перероблений клас для стабільної роботи з HEVC
 class LivePhoto {
     typealias LivePhotoResources = (pairedImage: URL, pairedVideo: URL)
 
-    static func generate(from imageURL: URL, videoURL: URL, progress: @escaping (CGFloat) -> Void, completion: @escaping (PHLivePhoto?, LivePhotoResources?) -> Void) {
+    static func generate(from imageURL: URL, videoURL: URL, completion: @escaping (PHLivePhoto?, LivePhotoResources?) -> Void) {
         let assetID = UUID().uuidString
-        let cacheDir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent("live_photo_cache")
+        let cacheDir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!.appendingPathComponent("lp_cache")
         try? FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
         
         let outImg = cacheDir.appendingPathComponent("\(assetID).jpg")
         let outVid = cacheDir.appendingPathComponent("\(assetID).mov")
         
-        // 1. Пишемо ID в картинку
         guard let _ = LivePhoto.addAssetID(assetID, toImage: imageURL, saveTo: outImg) else {
             completion(nil, nil); return
         }
         
-        // 2. Пишемо ID в відео + HEVC 9:16
         LivePhoto.addAssetID(assetID, toVideo: videoURL, saveTo: outVid) { success in
             if success {
                 PHLivePhoto.request(withResourceFileURLs: [outVid, outImg], placeholderImage: nil, targetSize: .zero, contentMode: .aspectFit) { lp, info in
@@ -171,8 +159,7 @@ class LivePhoto {
     static func addAssetID(_ assetID: String, toImage url: URL, saveTo: URL) -> URL? {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
               let destination = CGImageDestinationCreateWithURL(saveTo as CFURL, kUTTypeJPEG, 1, nil) else { return nil }
-        var props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [AnyHashable: Any] ?? [:]
-        props[kCGImagePropertyMakerAppleDictionary] = ["17": assetID]
+        let props = [kCGImagePropertyMakerAppleDictionary as String: ["17": assetID]]
         CGImageDestinationAddImageFromSource(destination, source, 0, props as CFDictionary)
         return CGImageDestinationFinalize(destination) ? saveTo : nil
     }
@@ -193,10 +180,10 @@ class LivePhoto {
             let input = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
             input.transform = videoTrack.preferredTransform
             
-            // Метадані QuickTime - КЛЮЧ ДО УСПІХУ
             let metadataItem = AVMutableMetadataItem()
             metadataItem.key = "com.apple.quicktime.content.identifier" as (NSCopying & NSObjectProtocol)?
-            metadataItem.keySpace = .mdta
+            // ВИПРАВЛЕНО: Використання rawValue для сумісності версій Swift
+            metadataItem.keySpace = AVMetadataKeySpace(rawValue: "mdta")
             metadataItem.value = assetID as (NSCopying & NSObjectProtocol)?
             metadataItem.dataType = "com.apple.metadata.datatype.UTF-8"
             writer.metadata = [metadataItem]
@@ -210,7 +197,7 @@ class LivePhoto {
             reader.startReading()
             writer.startSession(atSourceTime: .zero)
             
-            input.requestMediaDataWhenReady(on: DispatchQueue(label: "video_write")) {
+            input.requestMediaDataWhenReady(on: DispatchQueue(label: "video_writer_queue")) {
                 while input.isReadyForMoreMediaData {
                     if let buffer = output.copyNextSampleBuffer() {
                         input.append(buffer)
@@ -229,6 +216,11 @@ class LivePhoto {
             let req = PHAssetCreationRequest.forAsset()
             req.addResource(with: .pairedVideo, fileURL: res.pairedVideo, options: nil)
             req.addResource(with: .photo, fileURL: res.pairedImage, options: nil)
-        }, completionHandler: { success, _ in completion(success) })
+        }, completionHandler: { success, error in
+            if !success, let err = error {
+                NSLog("🍎 [LivePhoto] Gallery Save Error: %@", err.localizedDescription)
+            }
+            completion(success)
+        })
     }
 }
