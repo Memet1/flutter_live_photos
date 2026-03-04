@@ -15,9 +15,7 @@ public class SwiftLivePhotosPlugin: NSObject, FlutterPlugin {
   public func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
     if call.method == "generateFromLocalPath" {
         let args = call.arguments as! [String: Any]
-        guard let localPath = args["localPath"] as? String else {
-            result(false); return
-        }
+        guard let localPath = args["localPath"] as? String else { result(false); return }
         let startTime = args["startTime"] as? Double ?? 0.0
         let duration = args["duration"] as? Double ?? 0.0
 
@@ -36,29 +34,32 @@ class LivePhotoGenerator {
 
     func generate(videoPath: String, startTime: Double, duration: Double, completion: @escaping (Bool) -> Void) {
         let sourceURL = URL(fileURLWithPath: videoPath)
-        
-        // Перевірка дозволів перед будь-якою дією
         PHPhotoLibrary.requestAuthorization { status in
-            if status == .authorized || status == .limited {
-                self.createAssets(sourceURL: sourceURL, startTime: startTime, duration: duration, completion: completion)
-            } else {
-                NSLog("🍎 [LivePhotos] Error: No Gallery Permission")
-                completion(false)
-            }
+            guard status == .authorized || status == .limited else { completion(false); return }
+            self.createAssets(sourceURL: sourceURL, startTime: startTime, duration: duration, completion: completion)
         }
     }
 
     private func createAssets(sourceURL: URL, startTime: Double, duration: Double, completion: @escaping (Bool) -> Void) {
         let asset = AVURLAsset(url: sourceURL)
         
-        guard let imgURL = generateImage(asset: asset, at: startTime) else { 
-            completion(false); return 
+        // ВАЖЛИВО: Перевірка валідності часового діапазону (захист від Crash)
+        let videoDuration = asset.duration.seconds
+        let safeStart = min(startTime, videoDuration)
+        let safeDuration = min(duration, videoDuration - safeStart)
+        
+        guard safeDuration > 0.1 else {
+            NSLog("🍎 [LivePhotos] Error: Invalid Time Range (Video too short)")
+            completion(false); return
         }
+
+        guard let imgURL = generateImage(asset: asset, at: safeStart) else { completion(false); return }
         
         let movURL = FileManager.default.temporaryDirectory.appendingPathComponent("\(assetID).mov")
+        // Обов'язкове видалення старого файлу (захист від Crash)
         try? FileManager.default.removeItem(at: movURL)
 
-        writeVideo(asset: asset, to: movURL, startTime: startTime, duration: duration) { success in
+        writeVideoWithMetadata(asset: asset, to: movURL, startTime: safeStart, duration: safeDuration) { success in
             if success {
                 self.save(img: imgURL, vid: movURL, completion: completion)
             } else { completion(false) }
@@ -82,37 +83,36 @@ class LivePhotoGenerator {
         return CGImageDestinationFinalize(dest) ? url : nil
     }
 
-    private func writeVideo(asset: AVAsset, to url: URL, startTime: Double, duration: Double, completion: @escaping (Bool) -> Void) {
+    // РЕКОНСТРУКЦІЯ ЧЕРЕЗ AVAssetWriter
+    private func writeVideoWithMetadata(asset: AVAsset, to url: URL, startTime: Double, duration: Double, completion: @escaping (Bool) -> Void) {
         do {
             let reader = try AVAssetReader(asset: asset)
             let writer = try AVAssetWriter(outputURL: url, fileType: .mov)
             writer.shouldOptimizeForNetworkUse = true
 
             let start = CMTime(seconds: startTime, preferredTimescale: 600)
-            let dur = duration > 0 ? CMTime(seconds: duration, preferredTimescale: 600) : asset.duration
+            let dur = CMTime(seconds: duration, preferredTimescale: 600)
             reader.timeRange = CMTimeRange(start: start, duration: dur)
 
-            // Video Track
+            // 1. Video Input (Passthrough settings)
             guard let vTrack = asset.tracks(withMediaType: .video).first else { completion(false); return }
-            let vOut = AVAssetReaderTrackOutput(track: vTrack, outputSettings: nil)
             let vIn = AVAssetWriterInput(mediaType: .video, outputSettings: nil)
             vIn.transform = vTrack.preferredTransform
-            if writer.canAdd(vIn) { writer.add(vIn) } else { completion(false); return }
-            reader.add(vOut)
+            let vOut = AVAssetReaderTrackOutput(track: vTrack, outputSettings: nil)
+            if writer.canAdd(vIn) { writer.add(vIn) }
+            if reader.canAdd(vOut) { reader.add(vOut) }
 
-            // Audio Track (Безпечна перевірка)
+            // 2. Audio Input (Зберігаємо, якщо є)
             var aIn: AVAssetWriterInput?
             var aOut: AVAssetReaderTrackOutput?
             if let aTrack = asset.tracks(withMediaType: .audio).first {
-                aOut = AVAssetReaderTrackOutput(track: aTrack, outputSettings: nil)
                 aIn = AVAssetWriterInput(mediaType: .audio, outputSettings: nil)
-                if writer.canAdd(aIn!) {
-                    writer.add(aIn!)
-                    reader.add(aOut!)
-                }
+                aOut = AVAssetReaderTrackOutput(track: aTrack, outputSettings: nil)
+                if writer.canAdd(aIn!) { writer.add(aIn!) }
+                if reader.canAdd(aOut!) { reader.add(aOut!) }
             }
 
-            // Metadata Track
+            // 3. Metadata Input (com.apple.quicktime.still-image-time)
             let spec: NSDictionary = [
                 kCMMetadataFormatDescriptionMetadataSpecificationKey_Identifier as NSString: "mdta/com.apple.quicktime.still-image-time",
                 kCMMetadataFormatDescriptionMetadataSpecificationKey_DataType as NSString: "com.apple.metadata.datatype.int8"
@@ -123,7 +123,7 @@ class LivePhotoGenerator {
             let adaptor = AVAssetWriterInputMetadataAdaptor(assetWriterInput: mIn)
             if writer.canAdd(mIn) { writer.add(mIn) }
 
-            // Global UUID
+            // 4. Global Metadata (content identifier)
             let idItem = AVMutableMetadataItem()
             idItem.key = "com.apple.quicktime.content.identifier" as NSString
             idItem.keySpace = .metadata; idItem.value = assetID as NSString
@@ -134,31 +134,25 @@ class LivePhotoGenerator {
             reader.startReading()
             writer.startSession(atSourceTime: start)
 
-            // БЕЗПЕЧНА ІН'ЄКЦІЯ МЕТАДАНИХ
+            // Inject 0xFF byte
             let mItem = AVMutableMetadataItem()
             mItem.key = "com.apple.quicktime.still-image-time" as NSString
             mItem.keySpace = .metadata; mItem.value = NSNumber(value: Int8(-1))
             mItem.dataType = "com.apple.metadata.datatype.int8"
-            
-            // Додаємо метадані тільки якщо вхід готовий
-            if mIn.isReadyForMoreMediaData {
-                adaptor.append(AVTimedMetadataGroup(items: [mItem], timeRange: CMTimeRange(start: start, duration: CMTime(value: 1, timescale: 600))))
-            }
+            adaptor.append(AVTimedMetadataGroup(items: [mItem], timeRange: CMTimeRange(start: start, duration: CMTime(value: 1, timescale: 600))))
 
             let group = DispatchGroup()
-            let queue = DispatchQueue(label: "live.photo.export", qos: .userInitiated)
-
             group.enter()
-            vIn.requestMediaDataWhenReady(on: queue) {
+            vIn.requestMediaDataWhenReady(on: .global()) {
                 while vIn.isReadyForMoreMediaData {
                     if let buf = vOut.copyNextSampleBuffer() { vIn.append(buf) }
                     else { vIn.markAsFinished(); group.leave(); break }
                 }
             }
-            
+
             if let ai = aIn, let ao = aOut {
                 group.enter()
-                ai.requestMediaDataWhenReady(on: queue) {
+                ai.requestMediaDataWhenReady(on: .global()) {
                     while ai.isReadyForMoreMediaData {
                         if let buf = ao.copyNextSampleBuffer() { ai.append(buf) }
                         else { ai.markAsFinished(); group.leave(); break }
@@ -168,14 +162,9 @@ class LivePhotoGenerator {
 
             group.notify(queue: .main) {
                 mIn.markAsFinished()
-                writer.finishWriting {
-                    completion(writer.status == .completed)
-                }
+                writer.finishWriting { completion(writer.status == .completed) }
             }
-        } catch { 
-            NSLog("🍎 [LivePhotos] Fatal Write Error: \(error)")
-            completion(false) 
-        }
+        } catch { completion(false) }
     }
 
     private func save(img: URL, vid: URL, completion: @escaping (Bool) -> Void) {
@@ -183,9 +172,6 @@ class LivePhotoGenerator {
             let req = PHAssetCreationRequest.forAsset()
             req.addResource(with: .photo, fileURL: img, options: nil)
             req.addResource(with: .pairedVideo, fileURL: vid, options: nil)
-        }) { success, error in
-            if let err = error { NSLog("🍎 [LivePhotos] Save error: \(err)") }
-            completion(success)
-        }
+        }) { success, _ in completion(success) }
     }
 }
