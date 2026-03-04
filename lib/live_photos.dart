@@ -1,46 +1,33 @@
 import 'dart:async';
 import 'package:flutter/services.dart';
 
-class LivePhotos {
-  static const MethodChannel _channel = const MethodChannel('live_photos');
+class LivePhotosPlus {
+  static const MethodChannel _channel = MethodChannel('live_photos_plus');
 
+  /// Generates a Live Photo natively from a local video file.
+  /// [localPath] - The absolute path to the local video file.
+  /// [startTime] - The exact start time in seconds (e.g., 2.533).
+  /// [duration] - The exact duration in seconds (e.g., 3.000). Max for iOS Lock Screen is 3.0.
   static Future<bool> generate({
-    String? videoURL,
-    String? localPath,
-    double startTime = 0.0, // Додано параметр початку обрізки
-    double duration = 0.0,  // Додано параметр тривалості
+    required String localPath,
+    double startTime = 0.0,
+    double duration = 0.0,
   }) async {
-    assert(videoURL != null || localPath != null,
-        'Either videoURL or localPath must be set.');
-    assert(videoURL == null || localPath == null,
-        'Either videoURL or localPath is only configurable.');
-        
-    if (videoURL != null) {
-      final bool status = await _channel.invokeMethod(
-        'generateFromURL',
-        <String, dynamic>{
-          "videoURL": videoURL,
-        },
-      );
-      return status;
-    } else {
-      if (localPath != null) {
-        final bool status = await _channel.invokeMethod(
-          'generateFromLocalPath',
-          <String, dynamic>{
-            "localPath": localPath,
-            "startTime": startTime, // Передаємо в Swift
-            "duration": duration,   // Передаємо в Swift
-          },
-        );
-        return status;
-      }
+    try {
+      final bool result = await _channel.invokeMethod('generateFromLocalPath', {
+        'localPath': localPath,
+        'startTime': startTime,
+        'duration': duration,
+      });
+      return result;
+    } catch (e) {
+      print("LivePhotosPlus Error: $e");
+      return false;
     }
-    return false;
   }
 
-  static Future<bool> openSettings() async {
-    final bool status = await _channel.invokeMethod('openSettings');
-    return status;
+  /// Opens the iOS Settings app (useful if Photo Library permissions are denied).
+  static Future<void> openSettings() async {
+    await _channel.invokeMethod('openSettings');
   }
 }
