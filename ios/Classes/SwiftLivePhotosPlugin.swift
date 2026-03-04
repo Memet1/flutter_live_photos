@@ -5,10 +5,10 @@ import AVFoundation
 import Photos
 import MobileCoreServices
 
-public class SwiftLivePhotosPlusPlugin: NSObject, FlutterPlugin {
+public class SwiftLivePhotosPlugin: NSObject, FlutterPlugin {
   public static func register(with registrar: FlutterPluginRegistrar) {
-    let channel = FlutterMethodChannel(name: "live_photos_plus", binaryMessenger: registrar.messenger())
-    let instance = SwiftLivePhotosPlusPlugin()
+    let channel = FlutterMethodChannel(name: "live_photos", binaryMessenger: registrar.messenger())
+    let instance = SwiftLivePhotosPlugin()
     registrar.addMethodCallDelegate(instance, channel: channel)
   }
 
@@ -23,7 +23,7 @@ public class SwiftLivePhotosPlusPlugin: NSObject, FlutterPlugin {
         let startTime = args["startTime"] as? Double ?? 0.0
         let duration = args["duration"] as? Double ?? 0.0
 
-        NSLog("🍎 [LivePhotosPlus] Init: Processing MP4 -> MOV. start=\(startTime), dur=\(duration)")
+        NSLog("🍎 [LivePhotos] Init: Processing MP4 -> MOV. start=\(startTime), dur=\(duration)")
 
         let client = LivePhotoGenerator()
         client.generate(videoPath: localPath, startTime: startTime, duration: duration) { success in
@@ -43,7 +43,7 @@ class LivePhotoGenerator {
 
         PHPhotoLibrary.requestAuthorization { status in
             guard status == .authorized || status == .limited else {
-                NSLog("🍎 [LivePhotosPlus] Помилка: Немає доступу до галереї")
+                NSLog("🍎 [LivePhotos] Помилка: Немає доступу до галереї")
                 completion(false)
                 return
             }
@@ -106,7 +106,7 @@ class LivePhotoGenerator {
             let reader = try AVAssetReader(asset: asset)
             let writer = try AVAssetWriter(outputURL: outputURL, fileType: .mov)
 
-            // ВАЖЛИВО (Пункт 6): Оптимізація атомів. Переносить `moov` на початок файлу для PosterBoard.
+            // ВАЖЛИВО: Оптимізація атомів. Переносить `moov` на початок файлу для PosterBoard.
             writer.shouldOptimizeForNetworkUse = true
 
             let start = CMTime(seconds: startTime > 0 ? startTime : 0, preferredTimescale: 600)
@@ -124,7 +124,7 @@ class LivePhotoGenerator {
             reader.add(videoOutput)
             writer.add(videoInput)
 
-            // ВАЖЛИВО (Пункт 3): Збереження Аудіотреку (`soun`).
+            // ВАЖЛИВО: Збереження Аудіотреку (`soun`), якщо він є.
             var audioOutput: AVAssetReaderTrackOutput?
             var audioInput: AVAssetWriterInput?
             if let audioTrack = asset.tracks(withMediaType: .audio).first {
@@ -134,10 +134,10 @@ class LivePhotoGenerator {
                 reader.add(audioOutput!)
                 writer.add(audioInput!)
             } else {
-                NSLog("🍎 [LivePhotosPlus] ПОПЕРЕДЖЕННЯ: У вхідному mp4 відсутній звук! PosterBoard може відхилити цей файл.")
+                NSLog("🍎 [LivePhotos] Відео не має звуку. Пропускаємо аудіотрек.")
             }
 
-            // ВАЖЛИВО (Пункт 1): Global QuickTime Metadata UUID
+            // ВАЖЛИВО: Global QuickTime Metadata UUID
             let metadataItem = AVMutableMetadataItem()
             metadataItem.key = "com.apple.quicktime.content.identifier" as (NSCopying & NSObjectProtocol)?
             metadataItem.keySpace = AVMetadataKeySpace(rawValue: "mdta")
@@ -145,7 +145,7 @@ class LivePhotoGenerator {
             metadataItem.dataType = "com.apple.metadata.datatype.UTF-8"
             writer.metadata = [metadataItem]
 
-            // ВАЖЛИВО (Пункт 2): Timed Metadata Track
+            // ВАЖЛИВО: Timed Metadata Track
             let metadataSpec: NSDictionary = [
                 kCMMetadataFormatDescriptionMetadataSpecificationKey_Identifier as NSString: "mdta/com.apple.quicktime.still-image-time",
                 kCMMetadataFormatDescriptionMetadataSpecificationKey_DataType as NSString: "com.apple.metadata.datatype.int8"
@@ -162,7 +162,7 @@ class LivePhotoGenerator {
             reader.startReading()
             writer.startSession(atSourceTime: start)
 
-            // ВАЖЛИВО (Пункт 2): Payload 0xFF (який є -1 у форматі Int8)
+            // ВАЖЛИВО: Payload 0xFF (який є -1 у форматі Int8)
             let metadataValue = AVMutableMetadataItem()
             metadataValue.key = "com.apple.quicktime.still-image-time" as (NSCopying & NSObjectProtocol)?
             metadataValue.keySpace = AVMetadataKeySpace(rawValue: "mdta")
@@ -215,7 +215,7 @@ class LivePhotoGenerator {
             }
 
         } catch {
-            NSLog("🍎 [LivePhotosPlus] Error: \(error.localizedDescription)")
+            NSLog("🍎 [LivePhotos] Error: \(error.localizedDescription)")
             completion(false)
         }
     }
@@ -227,9 +227,9 @@ class LivePhotoGenerator {
             req.addResource(with: .photo, fileURL: imageURL, options: nil)
         }, completionHandler: { success, error in
             if let err = error {
-                NSLog("🍎 [LivePhotosPlus] Gallery Save Error: \(err.localizedDescription)")
+                NSLog("🍎 [LivePhotos] Gallery Save Error: \(err.localizedDescription)")
             } else {
-                NSLog("🍎 [LivePhotosPlus] УСПІХ! Файл ідеально зібрано і збережено.")
+                NSLog("🍎 [LivePhotos] УСПІХ! Файл ідеально зібрано і збережено.")
             }
             completion(success)
         })
