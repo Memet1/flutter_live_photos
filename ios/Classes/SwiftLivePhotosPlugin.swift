@@ -51,7 +51,7 @@ class LivePhotoGenerator {
         let safeDuration = min(duration, max(0, videoDuration - safeStart))
         
         guard safeDuration > 0.1 else {
-            NSLog("🍎 [LivePhotos] Error: Video duration too short")
+            NSLog("🍎 [LivePhotos] Error: Duration too short (\(safeDuration)s)")
             completion(false); return
         }
 
@@ -81,7 +81,6 @@ class LivePhotoGenerator {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(assetID).jpg")
         guard let dest = CGImageDestinationCreateWithURL(url as CFURL, kUTTypeJPEG, 1, nil) else { return nil }
         
-        // MakerNote для зв'язки з відео
         let metadata = [kCGImagePropertyMakerAppleDictionary as String: ["17": assetID]]
         CGImageDestinationAddImage(dest, cgImg, metadata as CFDictionary)
         return CGImageDestinationFinalize(dest) ? url : nil
@@ -97,7 +96,7 @@ class LivePhotoGenerator {
             let dur = CMTime(seconds: duration, preferredTimescale: 600)
             reader.timeRange = CMTimeRange(start: start, duration: dur)
 
-            // 1. ВІДЕО ТРЕК
+            // 1. ВІДЕО ТРЕК (Passthrough)
             guard let vTrack = asset.tracks(withMediaType: .video).first else { completion(false); return }
             let vOut = AVAssetReaderTrackOutput(track: vTrack, outputSettings: nil)
             let vIn = AVAssetWriterInput(mediaType: .video, outputSettings: nil)
@@ -105,27 +104,15 @@ class LivePhotoGenerator {
             if writer.canAdd(vIn) { writer.add(vIn) }
             if reader.canAdd(vOut) { reader.add(vOut) }
 
-            // 2. АУДІО ТРЕК (Синтез тиші, якщо звуку немає)
+            // 2. АУДІО ТРЕК (Тільки якщо він дійсно існує в оригіналі)
             var aIn: AVAssetWriterInput?
             var aOut: AVAssetReaderTrackOutput?
             let audioTracks = asset.tracks(withMediaType: .audio)
-            
-            if !audioTracks.isEmpty {
-                aOut = AVAssetReaderTrackOutput(track: audioTracks[0], outputSettings: nil)
+            if let aTrack = audioTracks.first {
+                aOut = AVAssetReaderTrackOutput(track: aTrack, outputSettings: nil)
                 aIn = AVAssetWriterInput(mediaType: .audio, outputSettings: nil)
                 if let aIn = aIn, writer.canAdd(aIn) { writer.add(aIn) }
                 if let aOut = aOut, reader.canAdd(aOut) { reader.add(aOut) }
-            } else {
-                // ВІДЕО ВІД ШІ: Створюємо порожній soun атом для валідації PosterBoard!
-                let audioSettings: [String: Any] = [
-                    AVFormatIDKey: kAudioFormatMPEG4AAC,
-                    AVNumberOfChannelsKey: 1,
-                    AVSampleRateKey: 44100,
-                    AVEncoderBitRateKey: 64000
-                ]
-                aIn = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
-                aIn?.expectsMediaDataInRealTime = false
-                if let aIn = aIn, writer.canAdd(aIn) { writer.add(aIn) }
             }
 
             // 3. МЕТАДАНІ ТРЕК
@@ -147,75 +134,70 @@ class LivePhotoGenerator {
             idItem.dataType = "com.apple.metadata.datatype.UTF-8"
             writer.metadata = [idItem]
 
-            // СТАРТ ЗАПИСУ
-            guard writer.startWriting() else { completion(false); return }
-            guard reader.startReading() else { completion(false); return }
+            // СТАРТ
+            guard writer.startWriting(), reader.startReading() else {
+                completion(false); return
+            }
             writer.startSession(atSourceTime: start)
 
-            // Ін'єкція 0xFF (Синхронізація)
-            let mItem = AVMutableMetadataItem()
-            mItem.key = "com.apple.quicktime.still-image-time" as NSString
-            mItem.keySpace = AVMetadataKeySpace(rawValue: "mdta")
-            mItem.value = NSNumber(value: Int8(-1))
-            mItem.dataType = "com.apple.metadata.datatype.int8"
-            adaptor.append(AVTimedMetadataGroup(items: [mItem], timeRange: CMTimeRange(start: start, duration: CMTime(value: 1, timescale: 600))))
+            // Ін'єкція 0xFF
+            if mIn.isReadyForMoreMediaData {
+                let mItem = AVMutableMetadataItem()
+                mItem.key = "com.apple.quicktime.still-image-time" as NSString
+                mItem.keySpace = AVMetadataKeySpace(rawValue: "mdta")
+                mItem.value = NSNumber(value: Int8(-1))
+                mItem.dataType = "com.apple.metadata.datatype.int8"
+                adaptor.append(AVTimedMetadataGroup(items: [mItem], timeRange: CMTimeRange(start: start, duration: CMTime(value: 1, timescale: 600))))
+            }
 
-            // БЕЗПЕЧНИЙ СЕКВЕНТАЛЬНИЙ ЦИКЛ (Anti-Crash)
-            let queue = DispatchQueue(label: "com.livephoto.muxing", qos: .userInitiated)
-            queue.async {
-                var videoDone = false
-                var audioDone = (aOut == nil) // Якщо звуку немає, читати нічого
-                
-                while !videoDone || !audioDone {
-                    // Захист від EXC_BAD_ACCESS: перевірка статусу перед читанням!
-                    if reader.status == .failed || reader.status == .cancelled {
-                        NSLog("🍎 [LivePhotos] Reader Failed: \(String(describing: reader.error))")
+            // БЕЗПЕЧНЕ ЗШИВАННЯ (Без зависань)
+            let group = DispatchGroup()
+            let videoQueue = DispatchQueue(label: "com.livephoto.video")
+            
+            group.enter()
+            vIn.requestMediaDataWhenReady(on: videoQueue) {
+                while vIn.isReadyForMoreMediaData {
+                    if let buf = vOut.copyNextSampleBuffer() {
+                        vIn.append(buf)
+                    } else {
+                        vIn.markAsFinished()
+                        group.leave()
                         break
-                    }
-                    
-                    var appended = false
-                    
-                    if !videoDone, vIn.isReadyForMoreMediaData {
-                        if let buf = vOut.copyNextSampleBuffer() {
-                            vIn.append(buf)
-                            appended = true
-                        } else {
-                            vIn.markAsFinished()
-                            videoDone = true
-                        }
-                    }
-                    
-                    if !audioDone, let aIn = aIn, let aOut = aOut, aIn.isReadyForMoreMediaData {
-                        if let buf = aOut.copyNextSampleBuffer() {
-                            aIn.append(buf)
-                            appended = true
-                        } else {
-                            aIn.markAsFinished()
-                            audioDone = true
-                        }
-                    }
-                    
-                    if !appended {
-                        usleep(1000) // Мікро-пауза для стабільності CPU
-                    }
-                }
-                
-                // Фіналізація всіх треків
-                if !videoDone { vIn.markAsFinished() }
-                if audioTracks.isEmpty {
-                    aIn?.markAsFinished() // Зберігаємо порожній аудіотрек
-                } else if !audioDone {
-                    aIn?.markAsFinished()
-                }
-                mIn.markAsFinished()
-                
-                writer.finishWriting {
-                    DispatchQueue.main.async {
-                        completion(writer.status == .completed)
                     }
                 }
             }
+
+            if let aIn = aIn, let aOut = aOut {
+                let audioQueue = DispatchQueue(label: "com.livephoto.audio")
+                group.enter()
+                aIn.requestMediaDataWhenReady(on: audioQueue) {
+                    while aIn.isReadyForMoreMediaData {
+                        if let buf = aOut.copyNextSampleBuffer() {
+                            aIn.append(buf)
+                        } else {
+                            aIn.markAsFinished()
+                            group.leave()
+                            break
+                        }
+                    }
+                }
+            }
+
+            // Фіналізація
+            group.notify(queue: .main) {
+                mIn.markAsFinished()
+                writer.finishWriting {
+                    if writer.status == .completed {
+                        completion(true)
+                    } else {
+                        NSLog("🍎 [LivePhotos] Writer Error: \(String(describing: writer.error))")
+                        completion(false)
+                    }
+                }
+            }
+
         } catch {
+            NSLog("🍎 [LivePhotos] Exception: \(error.localizedDescription)")
             completion(false)
         }
     }
