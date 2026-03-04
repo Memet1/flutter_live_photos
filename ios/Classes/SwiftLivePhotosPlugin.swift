@@ -35,7 +35,10 @@ class LivePhotoGenerator {
     func generate(videoPath: String, startTime: Double, duration: Double, completion: @escaping (Bool) -> Void) {
         let sourceURL = URL(fileURLWithPath: videoPath)
         PHPhotoLibrary.requestAuthorization { status in
-            guard status == .authorized || status == .limited else { completion(false); return }
+            guard status == .authorized || status == .limited else {
+                NSLog("🍎 [LivePhotos] Error: No Photo Library Permission")
+                completion(false); return
+            }
             self.createAssets(sourceURL: sourceURL, startTime: startTime, duration: duration, completion: completion)
         }
     }
@@ -43,17 +46,18 @@ class LivePhotoGenerator {
     private func createAssets(sourceURL: URL, startTime: Double, duration: Double, completion: @escaping (Bool) -> Void) {
         let asset = AVURLAsset(url: sourceURL)
         
-        // Безпечний розрахунок часу
         let videoDuration = asset.duration.seconds
         let safeStart = min(startTime, videoDuration)
-        let safeDuration = min(duration, videoDuration - safeStart)
+        let safeDuration = min(duration, max(0, videoDuration - safeStart))
         
         guard safeDuration > 0.1 else {
-            NSLog("🍎 [LivePhotos] Error: Invalid Time Range")
+            NSLog("🍎 [LivePhotos] Error: Video duration too short")
             completion(false); return
         }
 
-        guard let imgURL = generateImage(asset: asset, at: safeStart) else { completion(false); return }
+        guard let imgURL = generateImage(asset: asset, at: safeStart) else { 
+            completion(false); return 
+        }
         
         let movURL = FileManager.default.temporaryDirectory.appendingPathComponent("\(assetID).mov")
         try? FileManager.default.removeItem(at: movURL)
@@ -77,6 +81,7 @@ class LivePhotoGenerator {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(assetID).jpg")
         guard let dest = CGImageDestinationCreateWithURL(url as CFURL, kUTTypeJPEG, 1, nil) else { return nil }
         
+        // MakerNote для зв'язки з відео
         let metadata = [kCGImagePropertyMakerAppleDictionary as String: ["17": assetID]]
         CGImageDestinationAddImage(dest, cgImg, metadata as CFDictionary)
         return CGImageDestinationFinalize(dest) ? url : nil
@@ -92,25 +97,38 @@ class LivePhotoGenerator {
             let dur = CMTime(seconds: duration, preferredTimescale: 600)
             reader.timeRange = CMTimeRange(start: start, duration: dur)
 
-            // 1. Video Input
+            // 1. ВІДЕО ТРЕК
             guard let vTrack = asset.tracks(withMediaType: .video).first else { completion(false); return }
+            let vOut = AVAssetReaderTrackOutput(track: vTrack, outputSettings: nil)
             let vIn = AVAssetWriterInput(mediaType: .video, outputSettings: nil)
             vIn.transform = vTrack.preferredTransform
-            let vOut = AVAssetReaderTrackOutput(track: vTrack, outputSettings: nil)
             if writer.canAdd(vIn) { writer.add(vIn) }
             if reader.canAdd(vOut) { reader.add(vOut) }
 
-            // 2. Audio Input
+            // 2. АУДІО ТРЕК (Синтез тиші, якщо звуку немає)
             var aIn: AVAssetWriterInput?
             var aOut: AVAssetReaderTrackOutput?
-            if let aTrack = asset.tracks(withMediaType: .audio).first {
+            let audioTracks = asset.tracks(withMediaType: .audio)
+            
+            if !audioTracks.isEmpty {
+                aOut = AVAssetReaderTrackOutput(track: audioTracks[0], outputSettings: nil)
                 aIn = AVAssetWriterInput(mediaType: .audio, outputSettings: nil)
-                aOut = AVAssetReaderTrackOutput(track: aTrack, outputSettings: nil)
-                if writer.canAdd(aIn!) { writer.add(aIn!) }
-                if reader.canAdd(aOut!) { reader.add(aOut!) }
+                if let aIn = aIn, writer.canAdd(aIn) { writer.add(aIn) }
+                if let aOut = aOut, reader.canAdd(aOut) { reader.add(aOut) }
+            } else {
+                // ВІДЕО ВІД ШІ: Створюємо порожній soun атом для валідації PosterBoard!
+                let audioSettings: [String: Any] = [
+                    AVFormatIDKey: kAudioFormatMPEG4AAC,
+                    AVNumberOfChannelsKey: 1,
+                    AVSampleRateKey: 44100,
+                    AVEncoderBitRateKey: 64000
+                ]
+                aIn = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
+                aIn?.expectsMediaDataInRealTime = false
+                if let aIn = aIn, writer.canAdd(aIn) { writer.add(aIn) }
             }
 
-            // 3. Metadata Input
+            // 3. МЕТАДАНІ ТРЕК
             let spec: NSDictionary = [
                 kCMMetadataFormatDescriptionMetadataSpecificationKey_Identifier as NSString: "mdta/com.apple.quicktime.still-image-time",
                 kCMMetadataFormatDescriptionMetadataSpecificationKey_DataType as NSString: "com.apple.metadata.datatype.int8"
@@ -121,50 +139,85 @@ class LivePhotoGenerator {
             let adaptor = AVAssetWriterInputMetadataAdaptor(assetWriterInput: mIn)
             if writer.canAdd(mIn) { writer.add(mIn) }
 
-            // 4. Global Metadata (ВИПРАВЛЕНО ТУТ)
+            // Глобальний UUID
             let idItem = AVMutableMetadataItem()
             idItem.key = "com.apple.quicktime.content.identifier" as NSString
-            idItem.keySpace = AVMetadataKeySpace(rawValue: "mdta") // <---
+            idItem.keySpace = AVMetadataKeySpace(rawValue: "mdta")
             idItem.value = assetID as NSString
             idItem.dataType = "com.apple.metadata.datatype.UTF-8"
             writer.metadata = [idItem]
 
-            writer.startWriting()
-            reader.startReading()
+            // СТАРТ ЗАПИСУ
+            guard writer.startWriting() else { completion(false); return }
+            guard reader.startReading() else { completion(false); return }
             writer.startSession(atSourceTime: start)
 
-            // Inject 0xFF byte (ВИПРАВЛЕНО ТУТ)
+            // Ін'єкція 0xFF (Синхронізація)
             let mItem = AVMutableMetadataItem()
             mItem.key = "com.apple.quicktime.still-image-time" as NSString
-            mItem.keySpace = AVMetadataKeySpace(rawValue: "mdta") // <---
+            mItem.keySpace = AVMetadataKeySpace(rawValue: "mdta")
             mItem.value = NSNumber(value: Int8(-1))
             mItem.dataType = "com.apple.metadata.datatype.int8"
             adaptor.append(AVTimedMetadataGroup(items: [mItem], timeRange: CMTimeRange(start: start, duration: CMTime(value: 1, timescale: 600))))
 
-            let group = DispatchGroup()
-            group.enter()
-            vIn.requestMediaDataWhenReady(on: .global()) {
-                while vIn.isReadyForMoreMediaData {
-                    if let buf = vOut.copyNextSampleBuffer() { vIn.append(buf) }
-                    else { vIn.markAsFinished(); group.leave(); break }
+            // БЕЗПЕЧНИЙ СЕКВЕНТАЛЬНИЙ ЦИКЛ (Anti-Crash)
+            let queue = DispatchQueue(label: "com.livephoto.muxing", qos: .userInitiated)
+            queue.async {
+                var videoDone = false
+                var audioDone = (aOut == nil) // Якщо звуку немає, читати нічого
+                
+                while !videoDone || !audioDone {
+                    // Захист від EXC_BAD_ACCESS: перевірка статусу перед читанням!
+                    if reader.status == .failed || reader.status == .cancelled {
+                        NSLog("🍎 [LivePhotos] Reader Failed: \(String(describing: reader.error))")
+                        break
+                    }
+                    
+                    var appended = false
+                    
+                    if !videoDone, vIn.isReadyForMoreMediaData {
+                        if let buf = vOut.copyNextSampleBuffer() {
+                            vIn.append(buf)
+                            appended = true
+                        } else {
+                            vIn.markAsFinished()
+                            videoDone = true
+                        }
+                    }
+                    
+                    if !audioDone, let aIn = aIn, let aOut = aOut, aIn.isReadyForMoreMediaData {
+                        if let buf = aOut.copyNextSampleBuffer() {
+                            aIn.append(buf)
+                            appended = true
+                        } else {
+                            aIn.markAsFinished()
+                            audioDone = true
+                        }
+                    }
+                    
+                    if !appended {
+                        usleep(1000) // Мікро-пауза для стабільності CPU
+                    }
                 }
-            }
-
-            if let ai = aIn, let ao = aOut {
-                group.enter()
-                ai.requestMediaDataWhenReady(on: .global()) {
-                    while ai.isReadyForMoreMediaData {
-                        if let buf = ao.copyNextSampleBuffer() { ai.append(buf) }
-                        else { ai.markAsFinished(); group.leave(); break }
+                
+                // Фіналізація всіх треків
+                if !videoDone { vIn.markAsFinished() }
+                if audioTracks.isEmpty {
+                    aIn?.markAsFinished() // Зберігаємо порожній аудіотрек
+                } else if !audioDone {
+                    aIn?.markAsFinished()
+                }
+                mIn.markAsFinished()
+                
+                writer.finishWriting {
+                    DispatchQueue.main.async {
+                        completion(writer.status == .completed)
                     }
                 }
             }
-
-            group.notify(queue: .main) {
-                mIn.markAsFinished()
-                writer.finishWriting { completion(writer.status == .completed) }
-            }
-        } catch { completion(false) }
+        } catch {
+            completion(false)
+        }
     }
 
     private func save(img: URL, vid: URL, completion: @escaping (Bool) -> Void) {
@@ -172,6 +225,9 @@ class LivePhotoGenerator {
             let req = PHAssetCreationRequest.forAsset()
             req.addResource(with: .photo, fileURL: img, options: nil)
             req.addResource(with: .pairedVideo, fileURL: vid, options: nil)
-        }) { success, _ in completion(success) }
+        }) { success, err in
+            if let e = err { NSLog("🍎 [LivePhotos] Save Error: \(e.localizedDescription)") }
+            completion(success)
+        }
     }
 }
