@@ -1,11 +1,13 @@
 name: live_photos
-description: This generates LivePhotos from video url or local mp4 file and it's downloaded to Camera Roll.
-version: 0.6.0
+description: >-
+  Generate iOS-wallpaper-compatible Live Photos from video files or URLs.
+  Outputs HEIC + MOV pair saved to Camera Roll, ready for use as Live Wallpaper.
+version: 1.0.0
 homepage: 'https://github.com/YuheiNakasaka/flutter_live_photos'
 
 environment:
-  sdk: '>=2.12.0 <3.0.0'
-  flutter: ">=1.10.0"
+  sdk: '>=3.0.0 <4.0.0'
+  flutter: ">=3.10.0"
 
 dependencies:
   flutter:

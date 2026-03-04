@@ -8,29 +8,149 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   setUp(() {
-    channel.setMockMethodCallHandler((MethodCall methodCall) async {
-      if (methodCall.method == "generateFromURL") {
-        String? url = methodCall.arguments["videoURL"];
-        if (url != null) {
-          return true;
-        } else {
-          return false;
-        }
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (MethodCall methodCall) async {
+      switch (methodCall.method) {
+        case 'generate':
+          final args = methodCall.arguments as Map;
+          final localPath = args['localPath'] as String?;
+          final videoUrl = args['videoUrl'] as String?;
+
+          if (localPath != null && localPath.isNotEmpty) {
+            return {
+              'success': true,
+              'heicPath': '/tmp/live_photos_session/test.heic',
+              'movPath': '/tmp/live_photos_session/test.mov',
+            };
+          }
+          if (videoUrl != null && videoUrl.isNotEmpty) {
+            return {
+              'success': true,
+              'heicPath': '/tmp/live_photos_session/url.heic',
+              'movPath': '/tmp/live_photos_session/url.mov',
+            };
+          }
+          return {'success': false, 'error': 'No source'};
+
+        case 'cleanUp':
+          return null;
+
+        default:
+          return null;
       }
-      return false;
     });
   });
 
   tearDown(() {
-    channel.setMockMethodCallHandler(null);
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, null);
   });
 
-  test('should return true if videoURL is valid url', () async {
-    expect(await LivePhotos.generate(videoURL: "https://example.com/test.mp4"),
-        true);
+  // ---------------------------------------------------------------------------
+  // LivePhotoResult
+  // ---------------------------------------------------------------------------
+
+  group('LivePhotoResult', () {
+    test('fromMap — success case', () {
+      final r = LivePhotoResult.fromMap({
+        'success': true,
+        'heicPath': '/a.heic',
+        'movPath': '/a.mov',
+      });
+      expect(r.success, true);
+      expect(r.heicPath, '/a.heic');
+      expect(r.movPath, '/a.mov');
+      expect(r.error, isNull);
+    });
+
+    test('fromMap — failure case', () {
+      final r = LivePhotoResult.fromMap({
+        'success': false,
+        'error': 'boom',
+      });
+      expect(r.success, false);
+      expect(r.heicPath, isNull);
+      expect(r.error, 'boom');
+    });
+
+    test('fromMap — missing keys defaults to false', () {
+      final r = LivePhotoResult.fromMap({});
+      expect(r.success, false);
+    });
+
+    test('toString is readable', () {
+      final r = LivePhotoResult(success: true, heicPath: '/x.heic');
+      expect(r.toString(), contains('success: true'));
+      expect(r.toString(), contains('/x.heic'));
+    });
   });
 
-  test('should return false if videoURL is null', () async {
-    expect(await LivePhotos.generate(videoURL: null), false);
+  // ---------------------------------------------------------------------------
+  // Dart-side validation (these never reach native code)
+  // ---------------------------------------------------------------------------
+
+  group('LivePhotos.generate() — Dart validation', () {
+    test('error when neither videoUrl nor localPath provided', () async {
+      final r = await LivePhotos.generate();
+      expect(r.success, false);
+      expect(r.error, contains('Either'));
+    });
+
+    test('error when BOTH videoUrl and localPath provided', () async {
+      final r = await LivePhotos.generate(
+        videoUrl: 'https://example.com/v.mp4',
+        localPath: '/some/path.mp4',
+      );
+      expect(r.success, false);
+      expect(r.error, contains('not both'));
+    });
+
+    test('error for non-http URL', () async {
+      final r = await LivePhotos.generate(videoUrl: 'ftp://bad.com/v.mp4');
+      expect(r.success, false);
+      expect(r.error, contains('http'));
+    });
+
+    test('error for malformed URL', () async {
+      final r = await LivePhotos.generate(videoUrl: 'not a url at all');
+      expect(r.success, false);
+      expect(r.error, contains('Invalid URL'));
+    });
+
+    test('error for file not found', () async {
+      final r = await LivePhotos.generate(
+        localPath: '/nonexistent/video.mp4',
+      );
+      expect(r.success, false);
+      expect(r.error, contains('not found'));
+    });
+
+    test('error for negative startTime', () async {
+      final r = await LivePhotos.generate(
+        videoUrl: 'https://example.com/v.mp4',
+        startTime: -1.0,
+      );
+      expect(r.success, false);
+      expect(r.error, contains('startTime'));
+    });
+
+    test('error for zero/negative duration', () async {
+      final r = await LivePhotos.generate(
+        videoUrl: 'https://example.com/v.mp4',
+        duration: 0.0,
+      );
+      expect(r.success, false);
+      expect(r.error, contains('duration'));
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // cleanUp
+  // ---------------------------------------------------------------------------
+
+  group('LivePhotos.cleanUp()', () {
+    test('completes without error', () async {
+      await LivePhotos.cleanUp(); // should not throw
+    });
   });
 }
