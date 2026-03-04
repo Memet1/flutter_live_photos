@@ -16,17 +16,13 @@ public class SwiftLivePhotosPlugin: NSObject, FlutterPlugin {
     if call.method == "generateFromLocalPath" {
         let args = call.arguments as! [String: Any]
         guard let localPath = args["localPath"] as? String else {
-            result(false)
-            return
+            result(false); return
         }
-        
         let startTime = args["startTime"] as? Double ?? 0.0
         let duration = args["duration"] as? Double ?? 0.0
 
-        NSLog("🍎 [LivePhotos] Init: Processing MP4 -> MOV. start=\(startTime), dur=\(duration)")
-
-        let client = LivePhotoGenerator()
-        client.generate(videoPath: localPath, startTime: startTime, duration: duration) { success in
+        let generator = LivePhotoGenerator()
+        generator.generate(videoPath: localPath, startTime: startTime, duration: duration) { success in
             result(success)
         }
     } else {
@@ -40,198 +36,132 @@ class LivePhotoGenerator {
 
     func generate(videoPath: String, startTime: Double, duration: Double, completion: @escaping (Bool) -> Void) {
         let sourceURL = URL(fileURLWithPath: videoPath)
-
         PHPhotoLibrary.requestAuthorization { status in
-            guard status == .authorized || status == .limited else {
-                NSLog("🍎 [LivePhotos] Помилка: Немає доступу до галереї")
-                completion(false)
-                return
-            }
-            self.processAsset(sourceURL: sourceURL, startTime: startTime, duration: duration, completion: completion)
+            guard status == .authorized || status == .limited else { completion(false); return }
+            self.createAssets(sourceURL: sourceURL, startTime: startTime, duration: duration, completion: completion)
         }
     }
 
-    private func processAsset(sourceURL: URL, startTime: Double, duration: Double, completion: @escaping (Bool) -> Void) {
+    private func createAssets(sourceURL: URL, startTime: Double, duration: Double, completion: @escaping (Bool) -> Void) {
         let asset = AVURLAsset(url: sourceURL)
-
-        // 1. Генерація статичного фото (HEIC/JPEG) з Maker Note UUID
-        guard let jpgURL = generateImage(from: asset, at: startTime) else {
-            completion(false)
-            return
-        }
-
+        
+        // 1. Створюємо фото-компонент (Maker Note ID: 17)
+        guard let imgURL = generateImage(asset: asset, at: startTime) else { completion(false); return }
+        
         let movURL = FileManager.default.temporaryDirectory.appendingPathComponent("\(assetID).mov")
         try? FileManager.default.removeItem(at: movURL)
 
-        // 2. Збірка правильного QuickTime контейнера (moov + mdat)
-        createLivePhotoVideo(from: asset, to: movURL, startTime: startTime, duration: duration) { success in
+        // 2. Створюємо відео-компонент
+        writeVideo(asset: asset, to: movURL, startTime: startTime, duration: duration) { success in
             if success {
-                self.saveToLibrary(imageURL: jpgURL, videoURL: movURL, completion: completion)
-            } else {
-                completion(false)
-            }
+                self.save(img: imgURL, vid: movURL, completion: completion)
+            } else { completion(false) }
         }
     }
 
-    private func generateImage(from asset: AVAsset, at time: Double) -> URL? {
-        let imgGenerator = AVAssetImageGenerator(asset: asset)
-        imgGenerator.appliesPreferredTrackTransform = true
-        imgGenerator.requestedTimeToleranceBefore = .zero
-        imgGenerator.requestedTimeToleranceAfter = .zero
-
-        let cmTime = CMTime(seconds: time > 0 ? time : 0, preferredTimescale: 600)
-
-        guard let cgImage = try? imgGenerator.copyCGImage(at: cmTime, actualTime: nil) else { return nil }
-        let uiImage = UIImage(cgImage: cgImage)
-        guard let data = uiImage.jpegData(compressionQuality: 1.0) else { return nil }
-
-        let jpgURL = FileManager.default.temporaryDirectory.appendingPathComponent("\(assetID).jpg")
-        try? data.write(to: jpgURL)
-
-        return addAssetID(toImage: jpgURL)
-    }
-
-    private func addAssetID(toImage url: URL) -> URL? {
-        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
-              let destination = CGImageDestinationCreateWithURL(url as CFURL, kUTTypeJPEG, 1, nil) else { return nil }
+    private func generateImage(asset: AVAsset, at time: Double) -> URL? {
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.appliesPreferredTrackTransform = true
+        generator.requestedTimeToleranceBefore = .zero
+        generator.requestedTimeToleranceAfter = .zero
         
-        // ВАЖЛИВО: Запис UUID у kCGImagePropertyMakerAppleDictionary під ключем "17"
-        let props = [kCGImagePropertyMakerAppleDictionary as String: ["17": assetID]]
-        CGImageDestinationAddImageFromSource(destination, source, 0, props as CFDictionary)
-        return CGImageDestinationFinalize(destination) ? url : nil
+        let cmTime = CMTime(seconds: time, preferredTimescale: 600)
+        guard let cgImg = try? generator.copyCGImage(at: cmTime, actualTime: nil) else { return nil }
+        
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(assetID).jpg")
+        guard let dest = CGImageDestinationCreateWithURL(url as CFURL, kUTTypeJPEG, 1, nil) else { return nil }
+        
+        // ВАЖЛИВО: Пропрієтарний MakerNote Apple для зв'язку з відео
+        let metadata = [kCGImagePropertyMakerAppleDictionary as String: ["17": assetID]]
+        CGImageDestinationAddImage(dest, cgImg, metadata as CFDictionary)
+        return CGImageDestinationFinalize(dest) ? url : nil
     }
 
-    private func createLivePhotoVideo(from asset: AVAsset, to outputURL: URL, startTime: Double, duration: Double, completion: @escaping (Bool) -> Void) {
+    private func writeVideo(asset: AVAsset, to url: URL, startTime: Double, duration: Double, completion: @escaping (Bool) -> Void) {
         do {
             let reader = try AVAssetReader(asset: asset)
-            let writer = try AVAssetWriter(outputURL: outputURL, fileType: .mov)
-
-            // ВАЖЛИВО: Оптимізація атомів. Переносить `moov` на початок файлу для PosterBoard.
+            let writer = try AVAssetWriter(outputURL: url, fileType: .mov)
+            
+            // Оптимізація: moov атом на початку файлу (п. 6 аналізу)
             writer.shouldOptimizeForNetworkUse = true
 
-            let start = CMTime(seconds: startTime > 0 ? startTime : 0, preferredTimescale: 600)
-            let dur = CMTime(seconds: duration > 0 ? duration : asset.duration.seconds, preferredTimescale: 600)
+            let start = CMTime(seconds: startTime, preferredTimescale: 600)
+            let dur = duration > 0 ? CMTime(seconds: duration, preferredTimescale: 600) : asset.duration
             reader.timeRange = CMTimeRange(start: start, duration: dur)
 
-            // Відео трек (Passthrough)
-            guard let videoTrack = asset.tracks(withMediaType: .video).first else {
-                completion(false); return
-            }
-            let videoOutput = AVAssetReaderTrackOutput(track: videoTrack, outputSettings: nil)
-            let videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: nil)
-            videoInput.transform = videoTrack.preferredTransform
-            videoInput.expectsMediaDataInRealTime = false
-            reader.add(videoOutput)
-            writer.add(videoInput)
+            // ВІДЕО ТРЕК (Passthrough - зберігаємо CFR і колірні профілі)
+            guard let vTrack = asset.tracks(withMediaType: .video).first else { completion(false); return }
+            let vOut = AVAssetReaderTrackOutput(track: vTrack, outputSettings: nil)
+            let vIn = AVAssetWriterInput(mediaType: .video, outputSettings: nil)
+            vIn.transform = vTrack.preferredTransform
+            reader.add(vOut); writer.add(vIn)
 
-            // ВАЖЛИВО: Збереження Аудіотреку (`soun`), якщо він є.
-            var audioOutput: AVAssetReaderTrackOutput?
-            var audioInput: AVAssetWriterInput?
-            if let audioTrack = asset.tracks(withMediaType: .audio).first {
-                audioOutput = AVAssetReaderTrackOutput(track: audioTrack, outputSettings: nil)
-                audioInput = AVAssetWriterInput(mediaType: .audio, outputSettings: nil)
-                audioInput?.expectsMediaDataInRealTime = false
-                reader.add(audioOutput!)
-                writer.add(audioInput!)
-            } else {
-                NSLog("🍎 [LivePhotos] Відео не має звуку. Пропускаємо аудіотрек.")
+            // АУДІО ТРЕК (Зберігаємо soun atom - п. 2 аналізу)
+            var aIn: AVAssetWriterInput?
+            var aOut: AVAssetReaderTrackOutput?
+            if let aTrack = asset.tracks(withMediaType: .audio).first {
+                aOut = AVAssetReaderTrackOutput(track: aTrack, outputSettings: nil)
+                aIn = AVAssetWriterInput(mediaType: .audio, outputSettings: nil)
+                reader.add(aOut!); writer.add(aIn!)
             }
 
-            // ВАЖЛИВО: Global QuickTime Metadata UUID
-            let metadataItem = AVMutableMetadataItem()
-            metadataItem.key = "com.apple.quicktime.content.identifier" as (NSCopying & NSObjectProtocol)?
-            metadataItem.keySpace = AVMetadataKeySpace(rawValue: "mdta")
-            metadataItem.value = assetID as (NSCopying & NSObjectProtocol)?
-            metadataItem.dataType = "com.apple.metadata.datatype.UTF-8"
-            writer.metadata = [metadataItem]
-
-            // ВАЖЛИВО: Timed Metadata Track
-            let metadataSpec: NSDictionary = [
+            // МЕТАДАНІ ТРЕК (still-image-time)
+            let spec: NSDictionary = [
                 kCMMetadataFormatDescriptionMetadataSpecificationKey_Identifier as NSString: "mdta/com.apple.quicktime.still-image-time",
                 kCMMetadataFormatDescriptionMetadataSpecificationKey_DataType as NSString: "com.apple.metadata.datatype.int8"
             ]
-            var formatDesc: CMFormatDescription?
-            CMMetadataFormatDescriptionCreateWithMetadataSpecifications(allocator: kCFAllocatorDefault, metadataType: kCMMetadataFormatType_Boxed, metadataSpecifications: [metadataSpec] as CFArray, formatDescriptionOut: &formatDesc)
+            var desc: CMFormatDescription?
+            CMMetadataFormatDescriptionCreateWithMetadataSpecifications(allocator: nil, metadataType: kCMMetadataFormatType_Boxed, metadataSpecifications: [spec] as CFArray, formatDescriptionOut: &desc)
+            let mIn = AVAssetWriterInput(mediaType: .metadata, outputSettings: nil, sourceFormatHint: desc)
+            let adaptor = AVAssetWriterInputMetadataAdaptor(assetWriterInput: mIn)
+            writer.add(mIn)
 
-            let metadataInput = AVAssetWriterInput(mediaType: .metadata, outputSettings: nil, sourceFormatHint: formatDesc)
-            metadataInput.expectsMediaDataInRealTime = false
-            let metadataAdaptor = AVAssetWriterInputMetadataAdaptor(assetWriterInput: metadataInput)
-            writer.add(metadataInput)
+            // Глобальний UUID (content identifier)
+            let idItem = AVMutableMetadataItem()
+            idItem.key = "com.apple.quicktime.content.identifier" as NSString
+            idItem.keySpace = .metadata; idItem.value = assetID as NSString
+            idItem.dataType = "com.apple.metadata.datatype.UTF-8"
+            writer.metadata = [idItem]
 
-            writer.startWriting()
-            reader.startReading()
-            writer.startSession(atSourceTime: start)
+            writer.startWriting(); reader.startReading(); writer.startSession(atSourceTime: start)
 
-            // ВАЖЛИВО: Payload 0xFF (який є -1 у форматі Int8)
-            let metadataValue = AVMutableMetadataItem()
-            metadataValue.key = "com.apple.quicktime.still-image-time" as (NSCopying & NSObjectProtocol)?
-            metadataValue.keySpace = AVMetadataKeySpace(rawValue: "mdta")
-            let payloadValue: Int8 = -1 // 0xFF
-            metadataValue.value = NSNumber(value: payloadValue)
-            metadataValue.dataType = "com.apple.metadata.datatype.int8"
+            // Ін'єкція 0xFF (п. 2 аналізу)
+            let mItem = AVMutableMetadataItem()
+            mItem.key = "com.apple.quicktime.still-image-time" as NSString
+            mItem.keySpace = .metadata; mItem.value = NSNumber(value: Int8(-1)) // -1 == 0xFF
+            mItem.dataType = "com.apple.metadata.datatype.int8"
+            adaptor.append(AVTimedMetadataGroup(items: [mItem], timeRange: CMTimeRange(start: start, duration: CMTime(value: 1, timescale: 600))))
 
-            // Точна прив'язка до першого кадру
-            let metadataTimeRange = CMTimeRange(start: start, duration: CMTime(value: 1, timescale: 600))
-            let timedMetadataGroup = AVTimedMetadataGroup(items: [metadataValue], timeRange: metadataTimeRange)
-            metadataAdaptor.append(timedMetadataGroup)
-
-            // Мультиплексування (Зшивання потоків)
+            // Зшивання потоків
             let group = DispatchGroup()
-            let queue = DispatchQueue.global(qos: .userInitiated)
-
             group.enter()
-            videoInput.requestMediaDataWhenReady(on: queue) {
-                while videoInput.isReadyForMoreMediaData {
-                    if let buffer = videoOutput.copyNextSampleBuffer() {
-                        videoInput.append(buffer)
-                    } else {
-                        videoInput.markAsFinished()
-                        group.leave()
-                        break
-                    }
+            vIn.requestMediaDataWhenReady(on: .global()) {
+                while vIn.isReadyForMoreMediaData {
+                    if let buf = vOut.copyNextSampleBuffer() { vIn.append(buf) }
+                    else { vIn.markAsFinished(); group.leave(); break }
                 }
             }
-
-            if let aInput = audioInput, let aOutput = audioOutput {
+            if let ai = aIn, let ao = aOut {
                 group.enter()
-                aInput.requestMediaDataWhenReady(on: queue) {
-                    while aInput.isReadyForMoreMediaData {
-                        if let buffer = aOutput.copyNextSampleBuffer() {
-                            aInput.append(buffer)
-                        } else {
-                            aInput.markAsFinished()
-                            group.leave()
-                            break
-                        }
+                ai.requestMediaDataWhenReady(on: .global()) {
+                    while ai.isReadyForMoreMediaData {
+                        if let buf = ao.copyNextSampleBuffer() { ai.append(buf) }
+                        else { ai.markAsFinished(); group.leave(); break }
                     }
                 }
             }
-
             group.notify(queue: .main) {
-                metadataInput.markAsFinished()
-                writer.finishWriting {
-                    completion(writer.status == .completed)
-                }
+                mIn.markAsFinished()
+                writer.finishWriting { completion(writer.status == .completed) }
             }
-
-        } catch {
-            NSLog("🍎 [LivePhotos] Error: \(error.localizedDescription)")
-            completion(false)
-        }
+        } catch { completion(false) }
     }
 
-    private func saveToLibrary(imageURL: URL, videoURL: URL, completion: @escaping (Bool) -> Void) {
+    private func save(img: URL, vid: URL, completion: @escaping (Bool) -> Void) {
         PHPhotoLibrary.shared().performChanges({
             let req = PHAssetCreationRequest.forAsset()
-            req.addResource(with: .pairedVideo, fileURL: videoURL, options: nil)
-            req.addResource(with: .photo, fileURL: imageURL, options: nil)
-        }, completionHandler: { success, error in
-            if let err = error {
-                NSLog("🍎 [LivePhotos] Gallery Save Error: \(err.localizedDescription)")
-            } else {
-                NSLog("🍎 [LivePhotos] УСПІХ! Файл ідеально зібрано і збережено.")
-            }
-            completion(success)
-        })
+            req.addResource(with: .photo, fileURL: img, options: nil)
+            req.addResource(with: .pairedVideo, fileURL: vid, options: nil)
+        }) { success, _ in completion(success) }
     }
 }
