@@ -1,8 +1,8 @@
 import 'dart:async';
 import 'package:flutter/services.dart';
 
-class LivePhotosPlus {
-  static const MethodChannel _channel = MethodChannel('live_photos_plus');
+class LivePhotos {
+  static const MethodChannel _channel = MethodChannel('live_photos');
 
   /// Generates a Live Photo natively from a local video file.
   /// [localPath] - The absolute path to the local video file.
@@ -21,13 +21,8 @@ class LivePhotosPlus {
       });
       return result;
     } catch (e) {
-      print("LivePhotosPlus Error: $e");
+      print("LivePhotos Error: $e");
       return false;
     }
-  }
-
-  /// Opens the iOS Settings app (useful if Photo Library permissions are denied).
-  static Future<void> openSettings() async {
-    await _channel.invokeMethod('openSettings');
   }
 }
