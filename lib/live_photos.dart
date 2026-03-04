@@ -4,10 +4,8 @@ import 'package:flutter/services.dart';
 class LivePhotos {
   static const MethodChannel _channel = MethodChannel('live_photos');
 
-  /// Generates a Live Photo natively from a local video file.
-  /// [localPath] - The absolute path to the local video file.
-  /// [startTime] - The exact start time in seconds (e.g., 2.533).
-  /// [duration] - The exact duration in seconds (e.g., 3.000). Max for iOS Lock Screen is 3.0.
+  /// Генерує Live Photo. 
+  /// [startTime] та [duration] передаються як double для точності до кадру (п. 4 аналізу).
   static Future<bool> generate({
     required String localPath,
     double startTime = 0.0,
@@ -21,7 +19,7 @@ class LivePhotos {
       });
       return result;
     } catch (e) {
-      print("LivePhotos Error: $e");
+      print("LivePhotos Plugin Error: $e");
       return false;
     }
   }
