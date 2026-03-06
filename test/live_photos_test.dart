@@ -1,6 +1,6 @@
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:live_photos_plus/live_photos.dart';
+import 'package:live_photos_plus/live_photos_plus.dart';
 
 void main() {
   const MethodChannel channel = MethodChannel('live_photos_plus');
