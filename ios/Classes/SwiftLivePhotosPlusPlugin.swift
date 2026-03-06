@@ -10,7 +10,7 @@ import VideoToolbox
 // MARK: - Flutter Plugin Entry Point
 // ============================================================================
 
-public class SwiftLivePhotosPlugin: NSObject, FlutterPlugin {
+public class SwiftLivePhotosPlusPlugin: NSObject, FlutterPlugin {
 
     /// Dedicated subdirectory inside NSTemporaryDirectory for all generated files.
     /// Using a fixed subdirectory makes bulk cleanup trivial.
@@ -28,7 +28,7 @@ public class SwiftLivePhotosPlugin: NSObject, FlutterPlugin {
             name: "live_photos",
             binaryMessenger: registrar.messenger()
         )
-        let instance = SwiftLivePhotosPlugin()
+        let instance = SwiftLivePhotosPlusPlugin()
         registrar.addMethodCallDelegate(instance, channel: channel)
     }
 
@@ -78,7 +78,7 @@ public class SwiftLivePhotosPlugin: NSObject, FlutterPlugin {
                     )
                 case .failure(let error):
                     flutterResult(
-                        SwiftLivePhotosPlugin.fail(
+                        SwiftLivePhotosPlusPlugin.fail(
                             "Download failed: \(error.localizedDescription)"
                         ))
                 }
@@ -175,14 +175,14 @@ public class SwiftLivePhotosPlugin: NSObject, FlutterPlugin {
                     "🍎 [LivePhotos] Photo Library permission denied (status %d)",
                     status.rawValue)
                 flutterResult(
-                    SwiftLivePhotosPlugin.fail(
+                    SwiftLivePhotosPlusPlugin.fail(
                         "Photo Library permission denied"
                     ))
                 return
             }
 
             // Create a NEW generator instance per call — owns strong refs.
-            let generator = LivePhotoGenerator(sessionDir: Self.sessionDir)
+            let generator = LivePhotoPlusGenerator(sessionDir: Self.sessionDir)
             generator.run(
                 videoPath: videoPath,
                 startTime: startTime,
@@ -206,13 +206,13 @@ public class SwiftLivePhotosPlugin: NSObject, FlutterPlugin {
 }
 
 // ============================================================================
-// MARK: - LivePhotoGenerator
+// MARK: - LivePhotoPlusGenerator
 // ============================================================================
 /// Each generation task gets its own instance so that strong references
 /// (`activeAsset`, `activeReader`, `activeWriter`) survive the full lifecycle
 /// of the asynchronous AVAssetReader/Writer pipeline.
 
-final class LivePhotoGenerator {
+final class LivePhotoPlusGenerator {
 
     // MARK: - Strong Properties (ARC safety — NEVER make these local variables)
     private var activeAsset: AVAsset?
@@ -258,7 +258,7 @@ final class LivePhotoGenerator {
                 asset.statusOfValue(forKey: "tracks", error: &err) == .loaded
             else {
                 completion(
-                    SwiftLivePhotosPlugin.fail(
+                    SwiftLivePhotosPlusPlugin.fail(
                         "Cannot load video: \(err?.localizedDescription ?? "unknown")"
                     ))
                 return
@@ -267,7 +267,7 @@ final class LivePhotoGenerator {
             let totalDuration = asset.duration.seconds
             guard totalDuration > 0.1 else {
                 completion(
-                    SwiftLivePhotosPlugin.fail(
+                    SwiftLivePhotosPlusPlugin.fail(
                         "Video too short (\(String(format: "%.3f", totalDuration))s)"
                     ))
                 return
@@ -281,7 +281,7 @@ final class LivePhotoGenerator {
 
             guard safeDuration > 0.1 else {
                 completion(
-                    SwiftLivePhotosPlugin.fail(
+                    SwiftLivePhotosPlusPlugin.fail(
                         "Effective duration too short "
                             + "(\(String(format: "%.3f", safeDuration))s)"
                     ))
@@ -299,7 +299,7 @@ final class LivePhotoGenerator {
                 )
             else {
                 completion(
-                    SwiftLivePhotosPlugin.fail(
+                    SwiftLivePhotosPlusPlugin.fail(
                         "Failed to extract still image frame"
                     ))
                 return
@@ -318,7 +318,7 @@ final class LivePhotoGenerator {
             ) { writeSuccess in
                 guard writeSuccess else {
                     completion(
-                        SwiftLivePhotosPlugin.fail(
+                        SwiftLivePhotosPlusPlugin.fail(
                             "Failed to assemble video container"
                         ))
                     return
@@ -339,7 +339,7 @@ final class LivePhotoGenerator {
                         ])
                     } else {
                         completion(
-                            SwiftLivePhotosPlugin.fail(
+                            SwiftLivePhotosPlusPlugin.fail(
                                 "Failed to save to Camera Roll"
                             ))
                     }

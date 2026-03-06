@@ -21,4 +21,4 @@ flutter:
   plugin:
     platforms:
       ios:
-        pluginClass: LivePhotosPlugin
+        pluginClass: LivePhotosPlusPlugin

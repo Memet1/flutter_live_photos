@@ -1,4 +1,4 @@
-#import "LivePhotosPlugin.h"
+#import "LivePhotosPlusPlugin.h"
 #if __has_include(<live_photos_plus/live_photos_plus-Swift.h>)
 #import <live_photos_plus/live_photos_plus-Swift.h>
 #else
@@ -8,8 +8,8 @@
 #import "live_photos_plus-Swift.h"
 #endif
 
-@implementation LivePhotosPlugin
+@implementation LivePhotosPlusPlugin
 + (void)registerWithRegistrar:(NSObject<FlutterPluginRegistrar> *)registrar {
-  [SwiftLivePhotosPlugin registerWithRegistrar:registrar];
+  [SwiftLivePhotosPlusPlugin registerWithRegistrar:registrar];
 }
 @end
