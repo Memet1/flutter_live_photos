@@ -253,95 +253,97 @@ final class LivePhotoPlusGenerator {
 
         // Pre-load required keys asynchronously.
         asset.loadValuesAsynchronously(forKeys: ["duration", "tracks"]) { [self] in
-            var err: NSError?
-            guard asset.statusOfValue(forKey: "duration", error: &err) == .loaded,
-                asset.statusOfValue(forKey: "tracks", error: &err) == .loaded
-            else {
-                completion(
-                    SwiftLivePhotosPlusPlugin.fail(
-                        "Cannot load video: \(err?.localizedDescription ?? "unknown")"
-                    ))
-                return
-            }
-
-            let totalDuration = asset.duration.seconds
-            guard totalDuration > 0.1 else {
-                completion(
-                    SwiftLivePhotosPlusPlugin.fail(
-                        "Video too short (\(String(format: "%.3f", totalDuration))s)"
-                    ))
-                return
-            }
-
-            // ---- Safe bounds ------------------------------------------------
-            let safeStart = min(max(startTime, 0), max(0, totalDuration - 0.1))
-            var safeDuration = duration
-            if safeDuration <= 0 { safeDuration = min(3.0, totalDuration - safeStart) }
-            safeDuration = min(safeDuration, totalDuration - safeStart)
-
-            guard safeDuration > 0.1 else {
-                completion(
-                    SwiftLivePhotosPlusPlugin.fail(
-                        "Effective duration too short "
-                            + "(\(String(format: "%.3f", safeDuration))s)"
-                    ))
-                return
-            }
-
-            // ---- 1. Generate HEIC still image at the MIDDLE of the clip -----
-            // Using the middle frame as key photo matches Apple's own behaviour.
-            // generateStillImage() captures the EXACT PTS into self.exactStillImageTime
-            // so the still-image-time anchor is microsecond-accurate.
-            let stillTimeSeconds = safeStart + safeDuration / 2.0
-            guard
-                let imgURL = self.generateStillImage(
-                    asset: asset, atSeconds: stillTimeSeconds
-                )
-            else {
-                completion(
-                    SwiftLivePhotosPlusPlugin.fail(
-                        "Failed to extract still image frame"
-                    ))
-                return
-            }
-
-            // ---- 2. Write MOV with HEVC re-encode + metadata ----------------
-            let movURL = self.sessionDir
-                .appendingPathComponent("\(self.assetID).mov")
-            try? FileManager.default.removeItem(at: movURL)  // remove stale
-
-            self.writeVideo(
-                asset: asset,
-                to: movURL,
-                startTime: safeStart,
-                duration: safeDuration
-            ) { writeSuccess in
-                guard writeSuccess else {
+            DispatchQueue.global(qos: .userInitiated).async {
+                var err: NSError?
+                guard asset.statusOfValue(forKey: "duration", error: &err) == .loaded,
+                    asset.statusOfValue(forKey: "tracks", error: &err) == .loaded
+                else {
                     completion(
                         SwiftLivePhotosPlusPlugin.fail(
-                            "Failed to assemble video container"
+                            "Cannot load video: \(err?.localizedDescription ?? "unknown")"
                         ))
                     return
                 }
 
-                // ---- 3. Save HEIC + MOV pair into PHPhotoLibrary ------------
-                self.saveToCameraRoll(
-                    imageURL: imgURL, videoURL: movURL
-                ) { saveSuccess, errorMsg in
-                    // Release heavy objects now that everything is persisted.
-                    self.releaseActiveRefs()
+                let totalDuration = asset.duration.seconds
+                guard totalDuration > 0.1 else {
+                    completion(
+                        SwiftLivePhotosPlusPlugin.fail(
+                            "Video too short (\(String(format: "%.3f", totalDuration))s)"
+                        ))
+                    return
+                }
 
-                    if saveSuccess {
-                        completion([
-                            "success": true,
-                            "heicPath": imgURL.path,
-                            "movPath": movURL.path,
-                        ])
-                    } else {
-                        let errStr = errorMsg ?? "Failed to save to Camera Roll"
+                // ---- Safe bounds ------------------------------------------------
+                let safeStart = min(max(startTime, 0), max(0, totalDuration - 0.1))
+                var safeDuration = duration
+                if safeDuration <= 0 { safeDuration = min(3.0, totalDuration - safeStart) }
+                safeDuration = min(safeDuration, totalDuration - safeStart)
+
+                guard safeDuration > 0.1 else {
+                    completion(
+                        SwiftLivePhotosPlusPlugin.fail(
+                            "Effective duration too short "
+                                + "(\(String(format: "%.3f", safeDuration))s)"
+                        ))
+                    return
+                }
+
+                // ---- 1. Generate HEIC still image at the MIDDLE of the clip -----
+                // Using the middle frame as key photo matches Apple's own behaviour.
+                // generateStillImage() captures the EXACT PTS into self.exactStillImageTime
+                // so the still-image-time anchor is microsecond-accurate.
+                let stillTimeSeconds = safeStart + safeDuration / 2.0
+                guard
+                    let imgURL = self.generateStillImage(
+                        asset: asset, atSeconds: stillTimeSeconds
+                    )
+                else {
+                    completion(
+                        SwiftLivePhotosPlusPlugin.fail(
+                            "Failed to extract still image frame"
+                        ))
+                    return
+                }
+
+                // ---- 2. Write MOV with HEVC re-encode + metadata ----------------
+                let movURL = self.sessionDir
+                    .appendingPathComponent("\(self.assetID).mov")
+                try? FileManager.default.removeItem(at: movURL)  // remove stale
+
+                self.writeVideo(
+                    asset: asset,
+                    to: movURL,
+                    startTime: safeStart,
+                    duration: safeDuration
+                ) { writeSuccess in
+                    guard writeSuccess else {
                         completion(
-                            SwiftLivePhotosPlusPlugin.fail(errStr)
-                        )
+                            SwiftLivePhotosPlusPlugin.fail(
+                                "Failed to assemble video container"
+                            ))
+                        return
+                    }
+
+                    // ---- 3. Save HEIC + MOV pair into PHPhotoLibrary ------------
+                    self.saveToCameraRoll(
+                        imageURL: imgURL, videoURL: movURL
+                    ) { saveSuccess, errorMsg in
+                        // Release heavy objects now that everything is persisted.
+                        self.releaseActiveRefs()
+
+                        if saveSuccess {
+                            completion([
+                                "success": true,
+                                "heicPath": imgURL.path,
+                                "movPath": movURL.path,
+                            ])
+                        } else {
+                            let errStr = errorMsg ?? "Failed to save to Camera Roll"
+                            completion(
+                                SwiftLivePhotosPlusPlugin.fail(errStr)
+                            )
+                        }
                     }
                 }
             }
@@ -375,11 +377,16 @@ final class LivePhotoPlusGenerator {
             return nil
         }
 
-        // Store the exact frame PTS for still-image-time metadata sync.
-        self.exactStillImageTime = actualTime
+        // Store the exact frame PTS for still-image-time metadata sync, falling back if invalid.
+        if actualTime.isValid && actualTime.isNumeric {
+            self.exactStillImageTime = actualTime
+        } else {
+            self.exactStillImageTime = requestTime
+        }
+
         NSLog(
             "🍎 [LivePhotos] Still frame captured at exact PTS: %.6fs (requested %.3fs)",
-            actualTime.seconds, time)
+            self.exactStillImageTime.seconds, time)
 
         // Prefer HEIC; fall back to JPEG on older hardware.
         let heicURL = sessionDir.appendingPathComponent("\(assetID).heic")
@@ -527,24 +534,26 @@ final class LivePhotoPlusGenerator {
             // Adding a synthetic silent audio track can break wallpaper compatibility.
             // If the source has audio, we intentionally skip it.
 
-            // ---- TIMED METADATA TRACK 1: still-image-time -------------------
-            // This track contains the still-image-time anchor point AND the
-            // live-photo-still-image-transform key (matching reference structure).
-            let stillImageTimeSpec: NSDictionary = [
-                kCMMetadataFormatDescriptionMetadataSpecificationKey_Identifier
-                    as NSString:
-                    "mdta/com.apple.quicktime.still-image-time",
-                kCMMetadataFormatDescriptionMetadataSpecificationKey_DataType
-                    as NSString:
-                    "com.apple.metadata.datatype.int8",
+            // TIMED METADATA TRACK 1: still-image-time
+            let stillImageTimeSpec: [NSString: Any] = [
+                kCMMetadataFormatDescriptionMetadataSpecificationKey_Identifier as NSString:
+                    "mdta/com.apple.quicktime.still-image-time" as NSString,
+                kCMMetadataFormatDescriptionMetadataSpecificationKey_DataType as NSString:
+                    "com.apple.metadata.datatype.int8" as NSString,
             ]
             var metaDesc: CMFormatDescription?
-            CMMetadataFormatDescriptionCreateWithMetadataSpecifications(
-                allocator: nil,
+            let specsArray = NSArray(array: [stillImageTimeSpec])
+            let status = CMMetadataFormatDescriptionCreateWithMetadataSpecifications(
+                allocator: kCFAllocatorDefault,
                 metadataType: kCMMetadataFormatType_Boxed,
-                metadataSpecifications: [stillImageTimeSpec] as CFArray,
+                metadataSpecifications: specsArray,
                 formatDescriptionOut: &metaDesc
             )
+            if status != noErr || metaDesc == nil {
+                NSLog("🍎 [LivePhotos] ERROR: Failed to create metaDesc! OSStatus: %d", status)
+            } else {
+                NSLog("🍎 [LivePhotos] metaDesc created successfully")
+            }
             let metaInput = AVAssetWriterInput(
                 mediaType: .metadata,
                 outputSettings: nil,
@@ -619,21 +628,29 @@ final class LivePhotoPlusGenerator {
             // Uses self.exactStillImageTime captured during still image generation,
             // ensuring microsecond-level sync between the HEIC key frame and MOV anchor.
             // Duration is 1 tick at timescale 600 to match reference format.
+            // Inject still-image-time anchor at EXACT extracted frame PTS
             if metaInput.isReadyForMoreMediaData {
                 let anchor = AVMutableMetadataItem()
-                anchor.key = "com.apple.quicktime.still-image-time" as NSString
-                anchor.keySpace = AVMetadataKeySpace(rawValue: "mdta")
-                anchor.value = NSNumber(value: 0)
+                anchor.identifier = AVMetadataIdentifier(
+                    "mdta/com.apple.quicktime.still-image-time")
+                anchor.value = NSNumber(value: Int8(0))
                 anchor.dataType = "com.apple.metadata.datatype.int8"
 
-                metaAdaptor.append(
-                    AVTimedMetadataGroup(
-                        items: [anchor],
-                        timeRange: CMTimeRange(
-                            start: self.exactStillImageTime,
-                            duration: CMTime(value: 1, timescale: 600)
-                        )
-                    ))
+                let range = CMTimeRange(
+                    start: self.exactStillImageTime,
+                    duration: CMTime(value: 1, timescale: 600)
+                )
+
+                if range.isValid {
+                    let group = AVTimedMetadataGroup(items: [anchor], timeRange: range)
+                    let success = metaAdaptor.append(group)
+                    if !success {
+                        NSLog("🍎 [LivePhotos] WARNING: metaAdaptor.append returned false")
+                    }
+                } else {
+                    NSLog(
+                        "🍎 [LivePhotos] ERROR: Invalid CMTimeRange for still-image-time metadata!")
+                }
             }
 
             // ---- Removed Inject live-photo-info stub data ----------------------------
