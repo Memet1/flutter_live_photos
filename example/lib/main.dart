@@ -34,20 +34,19 @@ class _TestPageState extends State<TestPage> {
   LivePhotoResult? _lastResult;
   bool _isProcessing = false;
 
-  // Public domain test video
-  static const _testUrl =
-      'https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/720/Big_Buck_Bunny_720_10s_1MB.mp4';
+  // Local test video from user
+  static const _testLocalPath = '/Users/memet/Downloads/bg_compressed.mp4';
 
-  Future<void> _generateFromUrl() async {
+  Future<void> _generateFromLocal() async {
     if (_isProcessing) return;
     setState(() {
       _isProcessing = true;
-      _status = 'Downloading & generating…';
+      _status = 'Generating Live Photo (3s trim)…';
       _lastResult = null;
     });
 
     final result = await LivePhotos.generate(
-      videoUrl: _testUrl,
+      localPath: _testLocalPath,
       startTime: 0.0,
       duration: 3.0,
     );
@@ -104,9 +103,9 @@ class _TestPageState extends State<TestPage> {
             if (_isProcessing) const Center(child: CircularProgressIndicator()),
             const SizedBox(height: 16),
             FilledButton.icon(
-              onPressed: _isProcessing ? null : _generateFromUrl,
-              icon: const Icon(Icons.cloud_download),
-              label: const Text('Generate from URL'),
+              onPressed: _isProcessing ? null : _generateFromLocal,
+              icon: const Icon(Icons.video_file),
+              label: const Text('Generate 3s Live Photo (Local)'),
             ),
             const Spacer(),
             TextButton.icon(
