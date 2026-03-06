@@ -538,19 +538,11 @@ final class LivePhotoPlusGenerator {
                     as NSString:
                     "com.apple.metadata.datatype.int8",
             ]
-            let stillImageTransformSpec: NSDictionary = [
-                kCMMetadataFormatDescriptionMetadataSpecificationKey_Identifier
-                    as NSString:
-                    "mdta/com.apple.quicktime.live-photo-still-image-transform",
-                kCMMetadataFormatDescriptionMetadataSpecificationKey_DataType
-                    as NSString:
-                    "com.apple.metadata.datatype.int8",
-            ]
             var metaDesc: CMFormatDescription?
             CMMetadataFormatDescriptionCreateWithMetadataSpecifications(
                 allocator: nil,
                 metadataType: kCMMetadataFormatType_Boxed,
-                metadataSpecifications: [stillImageTimeSpec, stillImageTransformSpec] as CFArray,
+                metadataSpecifications: [stillImageTimeSpec] as CFArray,
                 formatDescriptionOut: &metaDesc
             )
             let metaInput = AVAssetWriterInput(
@@ -720,7 +712,15 @@ final class LivePhotoPlusGenerator {
             request.addResource(with: .photo, fileURL: imageURL, options: nil)
             request.addResource(with: .pairedVideo, fileURL: videoURL, options: nil)
         }) { success, error in
-            if let err = error {
+            if let err = error as NSError? {
+                let msg =
+                    err.localizedDescription.isEmpty
+                    ? "Error \(err.domain) \(err.code)" : err.localizedDescription
+                NSLog(
+                    "🍎 [LivePhotos] Camera Roll save error: %@ (Domain: %@, Code: %d)",
+                    msg, err.domain, err.code)
+                completion(false, "(\(err.code)) \(msg)")
+            } else if let err = error {
                 NSLog(
                     "🍎 [LivePhotos] Camera Roll save error: %@",
                     err.localizedDescription)
