@@ -3,7 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:live_photos_plus/live_photos.dart';
 
 void main() {
-  const MethodChannel channel = MethodChannel('live_photos');
+  const MethodChannel channel = MethodChannel('live_photos_plus');
 
   TestWidgetsFlutterBinding.ensureInitialized();
 
@@ -19,15 +19,15 @@ void main() {
           if (localPath != null && localPath.isNotEmpty) {
             return {
               'success': true,
-              'heicPath': '/tmp/live_photos_session/test.heic',
-              'movPath': '/tmp/live_photos_session/test.mov',
+              'heicPath': '/tmp/live_photos_plus_session/test.heic',
+              'movPath': '/tmp/live_photos_plus_session/test.mov',
             };
           }
           if (videoUrl != null && videoUrl.isNotEmpty) {
             return {
               'success': true,
-              'heicPath': '/tmp/live_photos_session/url.heic',
-              'movPath': '/tmp/live_photos_session/url.mov',
+              'heicPath': '/tmp/live_photos_plus_session/url.heic',
+              'movPath': '/tmp/live_photos_plus_session/url.mov',
             };
           }
           return {'success': false, 'error': 'No source'};
@@ -89,15 +89,15 @@ void main() {
   // Dart-side validation (these never reach native code)
   // ---------------------------------------------------------------------------
 
-  group('LivePhotos.generate() — Dart validation', () {
+  group('LivePhotosPlus.generate() — Dart validation', () {
     test('error when neither videoUrl nor localPath provided', () async {
-      final r = await LivePhotos.generate();
+      final r = await LivePhotosPlus.generate();
       expect(r.success, false);
       expect(r.error, contains('Either'));
     });
 
     test('error when BOTH videoUrl and localPath provided', () async {
-      final r = await LivePhotos.generate(
+      final r = await LivePhotosPlus.generate(
         videoUrl: 'https://example.com/v.mp4',
         localPath: '/some/path.mp4',
       );
@@ -106,19 +106,19 @@ void main() {
     });
 
     test('error for non-http URL', () async {
-      final r = await LivePhotos.generate(videoUrl: 'ftp://bad.com/v.mp4');
+      final r = await LivePhotosPlus.generate(videoUrl: 'ftp://bad.com/v.mp4');
       expect(r.success, false);
       expect(r.error, contains('http'));
     });
 
     test('error for malformed URL', () async {
-      final r = await LivePhotos.generate(videoUrl: 'not a url at all');
+      final r = await LivePhotosPlus.generate(videoUrl: 'not a url at all');
       expect(r.success, false);
       expect(r.error, contains('Invalid URL'));
     });
 
     test('error for file not found', () async {
-      final r = await LivePhotos.generate(
+      final r = await LivePhotosPlus.generate(
         localPath: '/nonexistent/video.mp4',
       );
       expect(r.success, false);
@@ -126,7 +126,7 @@ void main() {
     });
 
     test('error for negative startTime', () async {
-      final r = await LivePhotos.generate(
+      final r = await LivePhotosPlus.generate(
         videoUrl: 'https://example.com/v.mp4',
         startTime: -1.0,
       );
@@ -135,7 +135,7 @@ void main() {
     });
 
     test('error for zero/negative duration', () async {
-      final r = await LivePhotos.generate(
+      final r = await LivePhotosPlus.generate(
         videoUrl: 'https://example.com/v.mp4',
         duration: 0.0,
       );
@@ -148,9 +148,9 @@ void main() {
   // cleanUp
   // ---------------------------------------------------------------------------
 
-  group('LivePhotos.cleanUp()', () {
+  group('LivePhotosPlus.cleanUp()', () {
     test('completes without error', () async {
-      await LivePhotos.cleanUp(); // should not throw
+      await LivePhotosPlus.cleanUp(); // should not throw
     });
   });
 }

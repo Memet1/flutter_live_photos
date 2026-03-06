@@ -25,7 +25,7 @@ public class SwiftLivePhotosPlusPlugin: NSObject, FlutterPlugin {
 
     public static func register(with registrar: FlutterPluginRegistrar) {
         let channel = FlutterMethodChannel(
-            name: "live_photos",
+            name: "live_photos_plus",
             binaryMessenger: registrar.messenger()
         )
         let instance = SwiftLivePhotosPlusPlugin()

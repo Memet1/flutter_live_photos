@@ -46,8 +46,8 @@ class LivePhotoResult {
 ///
 /// Supported input formats: MP4, MOV, M4V, 3GP, and other
 /// AVFoundation-compatible containers.
-class LivePhotos {
-  static const MethodChannel _channel = MethodChannel('live_photos');
+class LivePhotosPlus {
+  static const MethodChannel _channel = MethodChannel('live_photos_plus');
 
   /// Generates a Live Photo from either a remote [videoUrl] or a [localPath].
   ///

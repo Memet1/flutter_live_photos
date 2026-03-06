@@ -3,7 +3,7 @@ import 'package:live_photos_example/main.dart';
 
 void main() {
   testWidgets('App renders correctly', (WidgetTester tester) async {
-    await tester.pumpWidget(const LivePhotosTestApp());
+    await tester.pumpWidget(const LivePhotosPlusTestApp());
 
     expect(find.text('Live Photos Test'), findsOneWidget);
     expect(find.text('Generate from URL → Save to Gallery'), findsOneWidget);

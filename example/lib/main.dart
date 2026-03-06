@@ -2,11 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:live_photos_plus/live_photos.dart';
 
 void main() {
-  runApp(const LivePhotosTestApp());
+  runApp(const LivePhotosPlusTestApp());
 }
 
-class LivePhotosTestApp extends StatelessWidget {
-  const LivePhotosTestApp({super.key});
+class LivePhotosPlusTestApp extends StatelessWidget {
+  const LivePhotosPlusTestApp({super.key});
 
   @override
   Widget build(BuildContext context) {
@@ -45,7 +45,7 @@ class _TestPageState extends State<TestPage> {
       _lastResult = null;
     });
 
-    final result = await LivePhotos.generate(
+    final result = await LivePhotosPlus.generate(
       localPath: _testLocalPath,
       startTime: 0.0,
       duration: 3.0,
@@ -60,7 +60,7 @@ class _TestPageState extends State<TestPage> {
   }
 
   Future<void> _cleanUp() async {
-    await LivePhotos.cleanUp();
+    await LivePhotosPlus.cleanUp();
     setState(() {
       _status = '🧹 Temp files cleaned';
       _lastResult = null;
