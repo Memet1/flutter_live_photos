@@ -327,7 +327,7 @@ final class LivePhotoPlusGenerator {
                 // ---- 3. Save HEIC + MOV pair into PHPhotoLibrary ------------
                 self.saveToCameraRoll(
                     imageURL: imgURL, videoURL: movURL
-                ) { saveSuccess in
+                ) { saveSuccess, errorMsg in
                     // Release heavy objects now that everything is persisted.
                     self.releaseActiveRefs()
 
@@ -338,10 +338,10 @@ final class LivePhotoPlusGenerator {
                             "movPath": movURL.path,
                         ])
                     } else {
+                        let errStr = errorMsg ?? "Failed to save to Camera Roll"
                         completion(
-                            SwiftLivePhotosPlusPlugin.fail(
-                                "Failed to save to Camera Roll"
-                            ))
+                            SwiftLivePhotosPlusPlugin.fail(errStr)
+                        )
                     }
                 }
             }
@@ -563,33 +563,8 @@ final class LivePhotoPlusGenerator {
             )
             if writer.canAdd(metaInput) { writer.add(metaInput) }
 
-            // ---- TIMED METADATA TRACK 2: live-photo-info --------------------
-            // Reference MOV has a per-frame LivePhotoInfo metadata track.
-            // We create a minimal version with stub data.
-            let livePhotoInfoSpec: NSDictionary = [
-                kCMMetadataFormatDescriptionMetadataSpecificationKey_Identifier
-                    as NSString:
-                    "mdta/com.apple.quicktime.live-photo-info",
-                kCMMetadataFormatDescriptionMetadataSpecificationKey_DataType
-                    as NSString:
-                    kCMMetadataBaseDataType_RawData as NSString,
-            ]
-            var lpiMetaDesc: CMFormatDescription?
-            CMMetadataFormatDescriptionCreateWithMetadataSpecifications(
-                allocator: nil,
-                metadataType: kCMMetadataFormatType_Boxed,
-                metadataSpecifications: [livePhotoInfoSpec] as CFArray,
-                formatDescriptionOut: &lpiMetaDesc
-            )
-            let lpiMetaInput = AVAssetWriterInput(
-                mediaType: .metadata,
-                outputSettings: nil,
-                sourceFormatHint: lpiMetaDesc
-            )
-            let lpiMetaAdaptor = AVAssetWriterInputMetadataAdaptor(
-                assetWriterInput: lpiMetaInput
-            )
-            if writer.canAdd(lpiMetaInput) { writer.add(lpiMetaInput) }
+            // Removed TIMED METADATA TRACK 2: live-photo-info
+            // because synthetic stub data makes the video invalid.
 
             // ---- GLOBAL METADATA --------------------------------------------
             // content.identifier = UUID (links to HEIC MakerApple key 17)
@@ -669,45 +644,7 @@ final class LivePhotoPlusGenerator {
                     ))
             }
 
-            // ---- Inject live-photo-info stub data ----------------------------
-            // The reference file has per-frame LivePhotoInfo. We write a minimal
-            // set of entries covering the video duration from the still-image-time
-            // to the end (matching reference which starts after a small offset).
-            let frameDuration = CMTime(value: 1, timescale: CMTimeScale(targetFrameRate))
-            let clipEndTime = CMTimeAdd(cmStart, cmDur)
-            // Start LPI data slightly after the clip start (matching reference pattern)
-            let lpiStartTime = CMTimeAdd(cmStart, frameDuration)
-
-            if lpiMetaInput.isReadyForMoreMediaData {
-                // Generate minimal LivePhotoInfo entries from just after clip start
-                // to just before clip end.
-                var currentLpiTime = lpiStartTime
-                while CMTimeCompare(currentLpiTime, clipEndTime) < 0 {
-                    let infoItem = AVMutableMetadataItem()
-                    infoItem.key = "com.apple.quicktime.live-photo-info" as NSString
-                    infoItem.keySpace = AVMetadataKeySpace(rawValue: "mdta")
-                    // Minimal LivePhotoInfo stub: version=3, all zeros for stabilization data
-                    // This matches the structure iOS expects (binary float array).
-                    infoItem.value = Self.createMinimalLivePhotoInfoData() as NSData
-                    infoItem.dataType = kCMMetadataBaseDataType_RawData as String
-
-                    let appendSuccess = lpiMetaAdaptor.append(
-                        AVTimedMetadataGroup(
-                            items: [infoItem],
-                            timeRange: CMTimeRange(
-                                start: currentLpiTime,
-                                duration: frameDuration
-                            )
-                        ))
-                    if !appendSuccess {
-                        NSLog(
-                            "🍎 [LivePhotos] Failed to append LPI metadata at %.3fs",
-                            currentLpiTime.seconds)
-                        break
-                    }
-                    currentLpiTime = CMTimeAdd(currentLpiTime, frameDuration)
-                }
-            }
+            // ---- Removed Inject live-photo-info stub data ----------------------------
 
             // ---- Async sample-copy with Serial Dispatch Queues --------------
             let finishGroup = DispatchGroup()
@@ -742,7 +679,6 @@ final class LivePhotoPlusGenerator {
             // ---- Finish writing when all pumps are done ---------------------
             finishGroup.notify(queue: .global(qos: .userInitiated)) {
                 metaInput.markAsFinished()
-                lpiMetaInput.markAsFinished()
                 writer.finishWriting {
                     // Safe to release reader/writer now.
                     self.activeReader = nil
@@ -770,37 +706,6 @@ final class LivePhotoPlusGenerator {
         }
     }
 
-    // MARK: - Minimal LivePhotoInfo Data
-
-    /// Creates minimal binary LivePhotoInfo stub data matching the format
-    /// used by iOS reference Live Photos. The structure is a binary blob
-    /// containing stabilization/gyroscope data. For synthetic Live Photos,
-    /// we write identity/zero values.
-    private static func createMinimalLivePhotoInfoData() -> Data {
-        // Reference format analysis shows 28 float32 values per entry.
-        // Structure: version(int32=3), timestamp(float32), flags, stabilization matrix fields
-        // For synthetic content, all stabilization values are identity/zero.
-        var data = Data()
-
-        // Version: 3 (matches reference)
-        var version: Int32 = 3
-        data.append(Data(bytes: &version, count: 4))
-
-        // Timestamp: 0 (relative to frame)
-        var timestamp: Float32 = 0.0
-        data.append(Data(bytes: &timestamp, count: 4))
-
-        // Remaining fields: zeros (identity stabilization)
-        // Reference shows ~26 more float values; we pad with zeros
-        let remainingFloats = 26
-        for _ in 0..<remainingFloats {
-            var zero: Float32 = 0.0
-            data.append(Data(bytes: &zero, count: 4))
-        }
-
-        return data
-    }
-
     // =========================================================================
     // MARK: - Step 3 — Save to PHPhotoLibrary
     // =========================================================================
@@ -808,7 +713,7 @@ final class LivePhotoPlusGenerator {
     private func saveToCameraRoll(
         imageURL: URL,
         videoURL: URL,
-        completion: @escaping (Bool) -> Void
+        completion: @escaping (Bool, String?) -> Void
     ) {
         PHPhotoLibrary.shared().performChanges({
             let request = PHAssetCreationRequest.forAsset()
@@ -819,8 +724,10 @@ final class LivePhotoPlusGenerator {
                 NSLog(
                     "🍎 [LivePhotos] Camera Roll save error: %@",
                     err.localizedDescription)
+                completion(false, err.localizedDescription)
+            } else {
+                completion(success, nil)
             }
-            completion(success)
         }
     }
 
