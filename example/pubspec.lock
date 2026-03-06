@@ -91,7 +91,7 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "3.0.2"
-  live_photos:
+  live_photos_plus:
     dependency: "direct main"
     description:
       path: ".."

@@ -1,28 +1,22 @@
 PODS:
   - Flutter (1.0.0)
-  - image_picker (0.0.1):
-    - Flutter
-  - live_photos (0.0.1):
+  - live_photos_plus (1.0.0):
     - Flutter
 
 DEPENDENCIES:
   - Flutter (from `Flutter`)
-  - image_picker (from `.symlinks/plugins/image_picker/ios`)
-  - live_photos (from `.symlinks/plugins/live_photos/ios`)
+  - live_photos_plus (from `.symlinks/plugins/live_photos_plus/ios`)
 
 EXTERNAL SOURCES:
   Flutter:
     :path: Flutter
-  image_picker:
-    :path: ".symlinks/plugins/image_picker/ios"
-  live_photos:
-    :path: ".symlinks/plugins/live_photos/ios"
+  live_photos_plus:
+    :path: ".symlinks/plugins/live_photos_plus/ios"
 
 SPEC CHECKSUMS:
-  Flutter: 50d75fe2f02b26cc09d224853bb45737f8b3214a
-  image_picker: 50e7c7ff960e5f58faa4d1f4af84a771c671bc4a
-  live_photos: f8ea75c614600f80ee4366931c4d25f774f10951
+  Flutter: cabc95a1d2626b1b06e7179b784ebcf0c0cde467
+  live_photos_plus: 9821b28bd513dbd47a4558426c6b0737fee62add
 
-PODFILE CHECKSUM: aafe91acc616949ddb318b77800a7f51bffa2a4c
+PODFILE CHECKSUM: 66939464afc92ef3e428b00e1ae0997eb06c6790
 
-COCOAPODS: 1.11.2
+COCOAPODS: 1.16.2

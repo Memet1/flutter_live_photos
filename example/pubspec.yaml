@@ -10,7 +10,7 @@ dependencies:
   flutter:
     sdk: flutter
 
-  live_photos:
+  live_photos_plus:
     path: ../
 
 dev_dependencies:

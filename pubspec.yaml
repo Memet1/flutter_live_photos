@@ -1,4 +1,4 @@
-name: live_photos
+name: live_photos_plus
 description: >-
   Generate iOS-wallpaper-compatible Live Photos from video files or URLs.
   Outputs HEIC + MOV pair saved to Camera Roll, ready for use as Live Wallpaper.

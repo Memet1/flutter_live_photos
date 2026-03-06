@@ -1,5 +1,5 @@
 Pod::Spec.new do |s|
-  s.name             = 'live_photos'
+  s.name             = 'live_photos_plus'
   s.version          = '1.0.0'
   s.summary          = 'iOS-wallpaper-compatible Live Photo generator for Flutter'
   s.description      = <<-DESC

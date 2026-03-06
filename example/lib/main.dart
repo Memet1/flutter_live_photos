@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:live_photos/live_photos.dart';
+import 'package:live_photos_plus/live_photos.dart';
 
 void main() {
   runApp(const LivePhotosTestApp());
