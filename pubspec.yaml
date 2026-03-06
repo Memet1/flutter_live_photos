@@ -2,7 +2,7 @@ name: live_photos_plus
 description: >-
   Generate iOS-wallpaper-compatible Live Photos from video files or URLs.
   Outputs HEIC + MOV pair saved to Camera Roll, ready for use as Live Wallpaper.
-version: 1.0.0
+version: 1.0.2
 homepage: 'https://github.com/YuheiNakasaka/flutter_live_photos'
 
 environment:

@@ -47,6 +47,7 @@ class LivePhotoResult {
 /// Supported input formats: MP4, MOV, M4V, 3GP, and other
 /// AVFoundation-compatible containers.
 class LivePhotosPlus {
+  static const String version = '1.0.2';
   static const MethodChannel _channel = MethodChannel('live_photos_plus');
 
   /// Generates a Live Photo from either a remote [videoUrl] or a [localPath].
@@ -91,6 +92,8 @@ class LivePhotosPlus {
     double startTime = 0.0,
     double duration = 3.0,
   }) async {
+    print('🚀 [LivePhotosPlus] Starting generation (ver: $version)');
+
     // ---- Dart-side validation ------------------------------------------
 
     final bool hasUrl = videoUrl != null && videoUrl.isNotEmpty;

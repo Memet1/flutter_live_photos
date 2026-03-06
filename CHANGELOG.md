@@ -1,3 +1,14 @@
+## 1.0.2
+
+### Fixes & Improvements
+- Fully replaced `AVAssetReader` / `AVAssetWriter` with `AVAssetExportSession` for video conversion and trimming, solving `KERN_INVALID_ADDRESS` crashes.
+- Implemented global metadata matching the iOS Live Wallpaper standard (`com.apple.quicktime.still-image-time` set to 0, explicit `com.apple.quicktime.creationdate`).
+- Adjusted the HEIC still image frame extraction to align perfectly with the `0` timing in metadata, ensuring seamless loop start when set as a wallpaper.
+- Added package version logging upon calling the `generate` function.
+
+## 1.0.1 (Bumped from 1.0.0 due to package rename)
+- Renamed package to `live_photos_plus`.
+
 ## 1.0.0 BREAKING CHANGE: Full rewrite for iOS Live Wallpaper compatibility
 
 ### Breaking Changes
