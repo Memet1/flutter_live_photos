@@ -4,7 +4,6 @@ import Foundation
 import Photos
 import UIKit
 import UniformTypeIdentifiers
-import VideoToolbox
 
 // ============================================================================
 // MARK: - Flutter Plugin Entry Point
@@ -163,24 +162,12 @@ public class SwiftLivePhotosPlusPlugin: NSObject, FlutterPlugin {
         }
 
         // Request Photo Library permission before doing any heavy work.
-        PHPhotoLibrary.requestAuthorization { status in
-            let isGranted: Bool
-            if #available(iOS 14, *) {
-                isGranted = status == .authorized || status == .limited
-            } else {
-                isGranted = status == .authorized
-            }
+        func continueWithGrant(_ isGranted: Bool) {
             guard isGranted else {
-                NSLog(
-                    "🍎 [LivePhotos] Photo Library permission denied (status %d)",
-                    status.rawValue)
-                flutterResult(
-                    SwiftLivePhotosPlusPlugin.fail(
-                        "Photo Library permission denied"
-                    ))
+                NSLog("🍎 [LivePhotos] Photo Library permission denied")
+                flutterResult(SwiftLivePhotosPlusPlugin.fail("Photo Library permission denied"))
                 return
             }
-
             // Create a NEW generator instance per call — owns strong refs.
             let generator = LivePhotoPlusGenerator(sessionDir: Self.sessionDir)
             generator.run(
@@ -193,6 +180,16 @@ public class SwiftLivePhotosPlusPlugin: NSObject, FlutterPlugin {
                     try? FileManager.default.removeItem(atPath: videoPath)
                 }
                 flutterResult(resultMap)
+            }
+        }
+
+        if #available(iOS 14, *) {
+            PHPhotoLibrary.requestAuthorization(for: .addOnly) { status in
+                continueWithGrant(status == .authorized || status == .limited)
+            }
+        } else {
+            PHPhotoLibrary.requestAuthorization { status in
+                continueWithGrant(status == .authorized)
             }
         }
     }
@@ -216,15 +213,11 @@ final class LivePhotoPlusGenerator {
 
     // MARK: - Strong Properties (ARC safety — NEVER make these local variables)
     private var activeAsset: AVAsset?
-    private var activeExportSession: AVAssetExportSession?
-
+    private var activeReader: AVAssetReader?
+    private var activeWriter: AVAssetWriter?
 
     /// Shared UUID that binds the still image and the video together.
     private let assetID = UUID().uuidString
-
-    /// Exact PTS of the extracted still frame — set by generateStillImage(),
-    /// consumed by writeVideo() for the still-image-time anchor.
-    private var exactStillImageTime: CMTime = .zero
 
     /// Directory where generated HEIC / MOV files are placed.
     private let sessionDir: URL
@@ -290,8 +283,6 @@ final class LivePhotoPlusGenerator {
                 }
 
                 // ---- 1. Generate HEIC still image near the START of the clip -----
-                // Using a frame near the start (e.g., 0.1s) matches the reference
-                // implementation and aligns perfectly with `still-image-time: 0` metadata.
                 let stillTimeSeconds = safeStart + min(0.1, safeDuration / 2.0)
                 guard
                     let imgURL = self.generateStillImage(
@@ -305,7 +296,7 @@ final class LivePhotoPlusGenerator {
                     return
                 }
 
-                // ---- 2. Write MOV with HEVC re-encode + metadata ----------------
+                // ---- 2. Write MOV with passthrough video + timed metadata track --
                 let movURL = self.sessionDir
                     .appendingPathComponent("\(self.assetID).mov")
                 try? FileManager.default.removeItem(at: movURL)  // remove stale
@@ -365,7 +356,6 @@ final class LivePhotoPlusGenerator {
         }
 
         let requestTime = CMTime(seconds: time, preferredTimescale: 600)
-        // Capture actualTime — the real PTS of the decoded frame.
         var actualTime: CMTime = .zero
         guard
             let cgImage = try? gen.copyCGImage(
@@ -376,16 +366,9 @@ final class LivePhotoPlusGenerator {
             return nil
         }
 
-        // Store the exact frame PTS for still-image-time metadata sync, falling back if invalid.
-        if actualTime.isValid && actualTime.isNumeric {
-            self.exactStillImageTime = actualTime
-        } else {
-            self.exactStillImageTime = requestTime
-        }
-
         NSLog(
-            "🍎 [LivePhotos] Still frame captured at exact PTS: %.6fs (requested %.3fs)",
-            self.exactStillImageTime.seconds, time)
+            "🍎 [LivePhotos] Still frame captured at PTS: %.6fs (requested %.3fs)",
+            actualTime.seconds, time)
 
         // Prefer HEIC; fall back to JPEG on older hardware.
         let heicURL = sessionDir.appendingPathComponent("\(assetID).heic")
@@ -400,7 +383,7 @@ final class LivePhotoPlusGenerator {
         return nil
     }
 
-    /// Writes a CGImage with Apple MakerNote (key 17 = assetID) and TIFF device tags.
+    /// Writes a CGImage with Apple MakerNote (key 17 = assetID) and EXIF dimensions.
     private func writeImage(
         _ cgImage: CGImage, to url: URL, utType: CFString
     ) -> Bool {
@@ -410,7 +393,8 @@ final class LivePhotoPlusGenerator {
             )
         else { return false }
 
-        // Metadata identical to the reference repo implementation
+        // MakerNote key "17" links the HEIC to the MOV via shared UUID.
+        // EXIF dimensions are required by PHAssetCreationRequest validation.
         let metadata: [String: Any] = [
             kCGImagePropertyMakerAppleDictionary as String: [
                 "17": assetID
@@ -419,12 +403,6 @@ final class LivePhotoPlusGenerator {
                 kCGImagePropertyExifPixelXDimension as String: cgImage.width,
                 kCGImagePropertyExifPixelYDimension as String: cgImage.height
             ],
-            kCGImagePropertyTIFFDictionary as String: [
-                kCGImagePropertyTIFFMake as String: "Apple",
-                kCGImagePropertyTIFFModel as String: "iPhone",
-            ],
-            "com.apple.quicktime.still-image-time": 0,
-            "com.apple.quicktime.content.identifier": assetID,
             kCGImageDestinationLossyCompressionQuality as String: 0.92,
         ]
 
@@ -443,7 +421,10 @@ final class LivePhotoPlusGenerator {
     }
 
     // =========================================================================
-    // MARK: - Step 2 — Assemble MOV Container (HEVC Re-encode)
+    // MARK: - Step 2 — Assemble MOV Container
+    // Passthrough video (no re-encode) + timed still-image-time metadata track.
+    // AVAssetWriter is required because AVAssetExportSession cannot write
+    // timed metadata tracks, which PosterBoard needs for Live Wallpapers.
     // =========================================================================
 
     private func writeVideo(
@@ -453,93 +434,186 @@ final class LivePhotoPlusGenerator {
         duration: Double,
         completion: @escaping (Bool) -> Void
     ) {
-        // ---- 1. Create a Composition to Strip Audio & Trim Time ----------------
-        let composition = AVMutableComposition()
         let cmStart = CMTime(seconds: startTime, preferredTimescale: 600)
-        let cmDur = CMTime(seconds: duration, preferredTimescale: 600)
+        let cmDur   = CMTime(seconds: duration,  preferredTimescale: 600)
         let timeRange = CMTimeRange(start: cmStart, duration: cmDur)
 
+        guard let videoTrack = asset.tracks(withMediaType: .video).first else {
+            NSLog("🍎 [LivePhotos] No video track found")
+            completion(false)
+            return
+        }
+
         do {
-            if let videoTrack = asset.tracks(withMediaType: .video).first,
-               let compVideoTrack = composition.addMutableTrack(
-                   withMediaType: .video,
-                   preferredTrackID: kCMPersistentTrackID_Invalid
-               ) {
-                try compVideoTrack.insertTimeRange(timeRange, of: videoTrack, at: .zero)
-                compVideoTrack.preferredTransform = videoTrack.preferredTransform
-            } else {
+            // ---- Reader (passthrough — nil outputSettings = compressed samples) ----
+            let reader = try AVAssetReader(asset: asset)
+            reader.timeRange = timeRange
+
+            let videoOutput = AVAssetReaderTrackOutput(
+                track: videoTrack, outputSettings: nil  // nil = passthrough, no decode
+            )
+            videoOutput.alwaysCopiesSampleData = false
+            guard reader.canAdd(videoOutput) else {
+                NSLog("🍎 [LivePhotos] Cannot add videoOutput to reader")
                 completion(false)
                 return
             }
+            reader.add(videoOutput)
+
+            // ---- Writer -------------------------------------------------------
+            let writer = try AVAssetWriter(outputURL: outputURL, fileType: .mov)
+            writer.shouldOptimizeForNetworkUse = true  // moov atom at front
+
+            // Keep strong refs so ARC doesn't release them mid-pipeline
+            self.activeReader = reader
+            self.activeWriter = writer
+
+            // Video input: passthrough — sourceFormatHint tells writer the codec
+            guard let videoFormatDesc = videoTrack.formatDescriptions.first as? CMFormatDescription else {
+                NSLog("🍎 [LivePhotos] No format description on video track")
+                completion(false)
+                return
+            }
+            let videoInput = AVAssetWriterInput(
+                mediaType: .video,
+                outputSettings: nil,  // nil = passthrough, no re-encode
+                sourceFormatHint: videoFormatDesc
+            )
+            videoInput.transform = videoTrack.preferredTransform
+            videoInput.expectsMediaDataInRealTime = false
+            guard writer.canAdd(videoInput) else {
+                NSLog("🍎 [LivePhotos] Cannot add videoInput to writer")
+                completion(false)
+                return
+            }
+            writer.add(videoInput)
+
+            // ---- Timed metadata track: still-image-time -----------------------
+            // PosterBoard requires a timed NRT Metadata track with
+            // com.apple.quicktime.still-image-time = -1 at t=0.
+            // Value -1 signals that the still image is a separate HEIC component
+            // (as opposed to a frame extracted from the video).
+            let stillImageTimeSpec: NSDictionary = [
+                kCMMetadataFormatDescriptionMetadataSpecificationKey_Identifier as NSString:
+                    "mdta/com.apple.quicktime.still-image-time",
+                kCMMetadataFormatDescriptionMetadataSpecificationKey_DataType as NSString:
+                    "com.apple.metadata.datatype.int8",
+            ]
+            var metaDesc: CMFormatDescription?
+            let specStatus = CMMetadataFormatDescriptionCreateWithMetadataSpecifications(
+                allocator: kCFAllocatorDefault,
+                metadataType: kCMMetadataFormatType_Boxed,
+                metadataSpecifications: [stillImageTimeSpec] as CFArray,
+                formatDescriptionOut: &metaDesc
+            )
+            guard specStatus == noErr, let metaDesc = metaDesc else {
+                NSLog("🍎 [LivePhotos] Failed to create metadata format desc: %d", specStatus)
+                completion(false)
+                return
+            }
+            let metaInput = AVAssetWriterInput(
+                mediaType: .metadata,
+                outputSettings: nil,
+                sourceFormatHint: metaDesc
+            )
+            let metaAdaptor = AVAssetWriterInputMetadataAdaptor(assetWriterInput: metaInput)
+            guard writer.canAdd(metaInput) else {
+                NSLog("🍎 [LivePhotos] Cannot add metaInput to writer")
+                completion(false)
+                return
+            }
+            writer.add(metaInput)
+
+            // ---- Global QuickTime metadata (movie-level keys box) --------------
+            let isoFormatter = ISO8601DateFormatter()
+            isoFormatter.formatOptions = [.withInternetDateTime]
+            let creationDateStr = isoFormatter.string(from: Date())
+
+            func makeGlobalItem(_ key: String, _ value: NSCopying & NSObjectProtocol) -> AVMetadataItem {
+                let item = AVMutableMetadataItem()
+                item.keySpace = .quickTimeMetadata
+                item.key = key as NSString
+                item.value = value
+                return item
+            }
+            writer.metadata = [
+                makeGlobalItem("com.apple.quicktime.content.identifier", assetID as NSString),
+                makeGlobalItem("com.apple.quicktime.make",               "Apple" as NSString),
+                makeGlobalItem("com.apple.quicktime.model",              "iPhone" as NSString),
+                makeGlobalItem("com.apple.quicktime.software",           UIDevice.current.systemVersion as NSString),
+                makeGlobalItem("com.apple.quicktime.creationdate",       creationDateStr as NSString),
+            ]
+
+            // ---- Start session ------------------------------------------------
+            writer.startWriting()
+            reader.startReading()
+            // startSession must match the PTS of the first sample from the reader.
+            // When reader.timeRange starts at cmStart, samples arrive with their
+            // original PTS (e.g. 5.0s). Using cmStart here maps them to output t=0.
+            writer.startSession(atSourceTime: cmStart)
+
+            // ---- Inject still-image-time timed sample at cmStart --------------
+            // The sample MUST be appended before markAsFinished().
+            // Duration of 1/600s matches the reference file structure.
+            // timeRange must be in source-time coordinates (cmStart → output t=0).
+            let anchor = AVMutableMetadataItem()
+            anchor.key = "com.apple.quicktime.still-image-time" as NSString
+            anchor.keySpace = AVMetadataKeySpace(rawValue: "mdta")
+            anchor.value = NSNumber(value: Int8(-1))           // -1 = separate HEIC component
+            anchor.dataType = kCMMetadataBaseDataType_SInt8 as String
+            let metaGroup = AVTimedMetadataGroup(
+                items: [anchor],
+                timeRange: CMTimeRange(
+                    start: cmStart,
+                    duration: CMTime(value: 1, timescale: 600)
+                )
+            )
+            if metaAdaptor.append(metaGroup) {
+                NSLog("🍎 [LivePhotos] still-image-time metadata appended successfully")
+            } else {
+                NSLog("🍎 [LivePhotos] WARNING: metaAdaptor.append returned false")
+            }
+            metaInput.markAsFinished()
+
+            // ---- Pump video samples asynchronously ----------------------------
+            let group = DispatchGroup()
+            group.enter()
+            videoInput.requestMediaDataWhenReady(on: DispatchQueue(label: "live.photos.video")) {
+                while videoInput.isReadyForMoreMediaData {
+                    if let sampleBuffer = videoOutput.copyNextSampleBuffer() {
+                        videoInput.append(sampleBuffer)
+                    } else {
+                        videoInput.markAsFinished()
+                        group.leave()
+                        break
+                    }
+                }
+            }
+
+            group.notify(queue: .global(qos: .userInitiated)) {
+                if reader.status == .completed {
+                    writer.finishWriting {
+                        let ok = writer.status == .completed
+                        if !ok {
+                            NSLog(
+                                "🍎 [LivePhotos] Writer finished with error: %@",
+                                writer.error?.localizedDescription ?? "unknown")
+                        }
+                        completion(ok)
+                    }
+                } else {
+                    NSLog(
+                        "🍎 [LivePhotos] Reader ended with status %d, error: %@",
+                        reader.status.rawValue,
+                        reader.error?.localizedDescription ?? "none")
+                    writer.cancelWriting()
+                    completion(false)
+                }
+            }
+
         } catch {
-            NSLog("🍎 [LivePhotos] Composition error: %@", error.localizedDescription)
+            NSLog("🍎 [LivePhotos] writeVideo setup error: %@", error.localizedDescription)
             completion(false)
-            return
-        }
-
-        // ---- 2. Prepare Export Session (Prefer HEVC) --------------------------
-        var presetName = AVAssetExportPresetHighestQuality
-        if #available(iOS 11.0, *) {
-            let hevcPreset = AVAssetExportPresetHEVCHighestQuality
-            if AVAssetExportSession.exportPresets(compatibleWith: composition).contains(hevcPreset) {
-                presetName = hevcPreset
-            }
-        }
-
-        guard let exportSession = AVAssetExportSession(
-            asset: composition,
-            presetName: presetName
-        ) else {
-            completion(false)
-            return
-        }
-
-        self.activeExportSession = exportSession
-        exportSession.outputURL = outputURL
-        exportSession.outputFileType = .mov
-        exportSession.shouldOptimizeForNetworkUse = true
-
-        // ---- 3. Meta Data Setup (Global, matches LivePhotoCreator) ------------
-        let idItem = AVMutableMetadataItem()
-        idItem.keySpace = .quickTimeMetadata
-        idItem.key = "com.apple.quicktime.content.identifier" as NSString
-        idItem.value = self.assetID as NSString
-
-        let stillTimeItem = AVMutableMetadataItem()
-        stillTimeItem.keySpace = .quickTimeMetadata
-        stillTimeItem.key = "com.apple.quicktime.still-image-time" as NSString
-        stillTimeItem.value = NSNumber(value: 0)
-
-        let makeItem = AVMutableMetadataItem()
-        makeItem.keySpace = .quickTimeMetadata
-        makeItem.key = "com.apple.quicktime.make" as NSString
-        makeItem.value = "Apple" as NSString
-
-        let modelItem = AVMutableMetadataItem()
-        modelItem.keySpace = .quickTimeMetadata
-        modelItem.key = "com.apple.quicktime.model" as NSString
-        modelItem.value = "iPhone" as NSString
-
-        let osVersion = UIDevice.current.systemVersion
-        let softwareItem = AVMutableMetadataItem()
-        softwareItem.keySpace = .quickTimeMetadata
-        softwareItem.key = "com.apple.quicktime.software" as NSString
-        softwareItem.value = osVersion as NSString
-
-        let dateItem = AVMutableMetadataItem()
-        dateItem.keySpace = .quickTimeMetadata
-        dateItem.key = "com.apple.quicktime.creationdate" as NSString
-        dateItem.value = Date().description as NSString
-
-        exportSession.metadata = [idItem, stillTimeItem, makeItem, modelItem, softwareItem, dateItem]
-
-        // ---- 4. Export Asynchronously -----------------------------------------
-        exportSession.exportAsynchronously {
-            let success = (exportSession.status == .completed)
-            if !success, let err = exportSession.error {
-                NSLog("🍎 [LivePhotos] exportAsynchronously failed: %@", err.localizedDescription)
-            }
-            completion(success)
         }
     }
 
@@ -555,8 +629,12 @@ final class LivePhotoPlusGenerator {
         PHPhotoLibrary.shared().performChanges({
             let request = PHAssetCreationRequest.forAsset()
             request.creationDate = Date()
-            request.addResource(with: .photo, fileURL: imageURL, options: nil)
-            request.addResource(with: .pairedVideo, fileURL: videoURL, options: nil)
+
+            let options = PHAssetResourceCreationOptions()
+            options.shouldMoveFile = false
+
+            request.addResource(with: .photo, fileURL: imageURL, options: options)
+            request.addResource(with: .pairedVideo, fileURL: videoURL, options: options)
         }) { success, error in
             if let err = error as NSError? {
                 let msg =
@@ -581,6 +659,7 @@ final class LivePhotoPlusGenerator {
 
     private func releaseActiveRefs() {
         activeAsset = nil
-        activeExportSession = nil
+        activeReader = nil
+        activeWriter = nil
     }
 }

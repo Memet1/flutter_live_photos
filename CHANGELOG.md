@@ -1,5 +1,11 @@
-## 1.0.2
+## 1.0.3
 
+### Fixes & Improvements
+- Added missing audio track handling to the video composition to prevent validation failure in `PHAssetCreationRequest`.
+- Strictly mirrored exact metadata injection logic and resource options based on standard iOS Live Wallpaper reference code.
+- Removed custom QuickTime tags (`make`, `model`, `software`) that could cause rejection in the Camera Roll.
+
+## 1.0.2
 ### Fixes & Improvements
 - Fully replaced `AVAssetReader` / `AVAssetWriter` with `AVAssetExportSession` for video conversion and trimming, solving `KERN_INVALID_ADDRESS` crashes.
 - Implemented global metadata matching the iOS Live Wallpaper standard (`com.apple.quicktime.still-image-time` set to 0, explicit `com.apple.quicktime.creationdate`).
